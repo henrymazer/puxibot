@@ -1,0 +1,49 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "puxibot-hub",
+  "main": "src/index.ts",
+  // Limitado pela versão do workerd embutida no @cloudflare/vitest-plugin (testes).
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": true }
+  },
+  // Interface web (apps/web). O Worker atende /api/* primeiro; o resto vem dos assets,
+  // com fallback de SPA para index.html. `npm run dev` cria um placeholder se o build não existir.
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "puxibot",
+      // Em produção o `wrangler deploy` provisiona o banco automaticamente (ou preencha database_id).
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "puxibot-files" }],
+  "durable_objects": {
+    "bindings": [{ "name": "WORKSPACE_HUB", "class_name": "WorkspaceHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceHub"] }],
+  // Cron de segurança das rotinas (o alarme do WorkspaceHub é o disparo principal).
+  "triggers": { "crons": ["*/30 * * * *"] },
+  // Workers AI (roteador) é opcional e não é declarado aqui para o `wrangler dev` funcionar sem login.
+  // Em produção, adicione: "ai": { "binding": "AI" }.
+  "vars": {
+    // URL pública do hub (ex.: https://puxibot.seu-time.workers.dev). Vazio = usa a origem da requisição.
+    "PUBLIC_URL": ""
+    // Cadastro: por padrão só a primeira conta entra sem convite; as demais precisam de um link de convite.
+    // Para liberar o cadastro a qualquer pessoa com o endereço, acrescente aqui: "OPEN_SIGNUP": "true"
+    // Opcionais (segredos): VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (Web Push, `npm run vapid`),
+    // TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME (avisos no Telegram). Sem eles, desligados.
+  },
+  "secrets": {
+    // Dev: gerados em .dev.vars por scripts/dev-setup.mjs. Produção: `wrangler secret put <NOME>`.
+    "required": ["JOB_TOKEN_SECRET", "SECRETS_KEY"]
+  }
+}

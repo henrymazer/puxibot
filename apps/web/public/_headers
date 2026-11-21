@@ -1,0 +1,14 @@
+# Cabeçalhos de segurança dos arquivos estáticos da interface (Workers Static Assets).
+# Valem para o que a Cloudflare serve direto dos assets, inclusive o index.html do fallback de SPA.
+# As respostas de /api/* saem do Worker e têm cabeçalhos próprios (apps/hub/src/http/security.ts).
+#
+# A CSP não tem 'unsafe-inline' em script-src: o tema e a tela offline carregam /theme.js e
+# /offline.js. Se um dia entrar um <script> inline, o hash dele precisa estar em script-src;
+# o teste src/pwa/csp.test.ts e o build (vite.config.ts) falham se faltar.
+# style-src aceita 'unsafe-inline' por causa dos atributos style do React e do <style> da tela offline.
+# frame-src 'self': pré-visualização de PDF do drive em <iframe> (mesma origem, /api/.../content).
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY

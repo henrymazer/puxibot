@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Testes
+        # Os testes com CLI de IA real só rodam com PUXIBOT_LIVE=1; aqui ficam de fora.
+        run: npm run test
+      - name: Build
+        run: npm run build
+      - name: Pacote do Worker (wrangler deploy --dry-run, sem conta)
+        run: npm run check:hub

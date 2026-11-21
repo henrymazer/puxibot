@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Sem conexão · Puxibot</title>
+    <style>
+      :root { color-scheme: light; --bg: #f6f5f1; --surface: #fdfcf9; --text: #1f2328; --muted: #5b6068; --line: #e0ddd3; --primary: #2f6f62; --primary-fg: #fff; }
+      @media (prefers-color-scheme: dark) {
+        :root { color-scheme: dark; --bg: #16181d; --surface: #1b1e24; --text: #e7e5df; --muted: #a9aca9; --line: #2e333b; --primary: #5fb3a0; --primary-fg: #0f1a17; }
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body { background: var(--bg); color: var(--text); font: 15px/1.55 "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+        display: flex; align-items: center; justify-content: center; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+      main { max-width: 360px; width: 100%; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 32px 24px; }
+      img { width: 56px; height: 56px; }
+      h1 { font-size: 1.25rem; margin: 16px 0 6px; }
+      p { color: var(--muted); margin: 0 0 20px; }
+      button { min-height: 44px; padding: 0 20px; border-radius: 9px; border: 0; background: var(--primary); color: var(--primary-fg); font: inherit; font-weight: 600; cursor: pointer; }
+      button:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icons/icon.svg" alt="" />
+      <h1>Sem conexão</h1>
+      <p>Não deu para falar com o servidor do Puxibot. Assim que a internet voltar, a conversa continua de onde parou.</p>
+      <button type="button" id="retry">Tentar de novo</button>
+    </main>
+    <script src="/offline.js"></script>
+  </body>
+</html>

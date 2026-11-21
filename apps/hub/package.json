@@ -1,0 +1,28 @@
+{
+  "name": "@puxibot/hub",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup:dev": "node scripts/dev-setup.mjs",
+    "predev": "node scripts/dev-setup.mjs",
+    "dev": "wrangler dev --port 8787",
+    "predb:migrate": "node scripts/dev-setup.mjs",
+    "db:migrate": "wrangler d1 migrations apply puxibot --local",
+    "deploy": "node ../../scripts/deploy-hub.mjs",
+    "types": "wrangler types --strict-vars=false",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "vapid": "node scripts/vapid-keys.mjs"
+  },
+  "dependencies": {
+    "@puxibot/shared": "*",
+    "hono": "^4.13.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.9.0",
+    "vitest": "^5.1.1",
+    "wrangler": "^4.166.0"
+  }
+}

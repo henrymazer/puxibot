@@ -1,0 +1,35 @@
+name: Problema
+description: Algo não funciona como deveria.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Falha de segurança? Não relate aqui: veja o SECURITY.md. Antes de enviar, apague tokens, senhas e endereços privados dos trechos colados."
+  - type: dropdown
+    id: parte
+    attributes:
+      label: Onde acontece
+      options: [Hub (Cloudflare), Runner (comando puxibot), Interface web, Instalação ou deploy, Documentação, Não sei]
+    validations:
+      required: true
+  - type: textarea
+    id: aconteceu
+    attributes:
+      label: O que aconteceu
+      description: O que você fez, o que esperava e o que veio no lugar. Inclua a mensagem de erro.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduzir
+    attributes:
+      label: Como reproduzir
+      placeholder: "1. ...\n2. ..."
+  - type: textarea
+    id: ambiente
+    attributes:
+      label: Ambiente
+      description: "Sistema (Linux, WSL2, macOS), versão do Node, CLI de IA e versão, modo de isolamento. No runner, cole a saída de `puxibot doctor`."
+  - type: input
+    id: versao
+    attributes:
+      label: Versão ou commit do Puxibot

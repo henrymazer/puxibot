@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+coverage/
+.puxibot/
+.dev.vars.*
+.env
+.env.*
+# Configuração de produção gerada por scripts/deploy-hub.mjs (ids da conta Cloudflare do time).
+wrangler.production.jsonc
+*.tgz

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bot, MessageSquare } from "lucide-react";
+import { Bot, MessageSquare, Pencil } from "lucide-react";
 import type { AgentDTO } from "@puxibot/shared";
 import { useWorkspace } from "../../store/workspace";
 import { ACTIVITY_LABEL, CLI_LABEL, canEditAgent, isAdmin, isOthersAssistant } from "../../lib/actors";
@@ -14,6 +14,7 @@ import { budgetPercent, UsageBar, useAgentUsage, useSaveAgent } from "./shared";
 import { MemoryTab } from "./MemoryTab";
 import { ActivityTab } from "./ActivityTab";
 import { GovernanceTab } from "./GovernanceTab";
+import { EditAgentDialog } from "./EditAgentDialog";
 import { ToolsTab } from "./ToolsTab";
 import { RoutineList } from "../routines/RoutineList";
 
@@ -94,6 +95,8 @@ function OverviewTab({ agent }: { agent: AgentDTO }) {
   const openDm = useWorkspace((s) => s.openDm);
   const navigate = useNavigate();
   const [opening, setOpening] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const canEdit = canEditAgent(agent, me);
   const owner = members[agent.ownerUserId];
   const seesBudget = isAdmin(me?.role) || agent.ownerUserId === me?.userId;
   const { usage, error, loading } = useAgentUsage(ws, agent.id, seesBudget);
@@ -128,6 +131,11 @@ function OverviewTab({ agent }: { agent: AgentDTO }) {
           <Button variant="primary" icon={<MessageSquare className="size-4" />} onClick={talk} loading={opening} disabled={!canTalk}>
             Conversar
           </Button>
+          {canEdit && (
+            <Button icon={<Pencil className="size-4" />} onClick={() => setEditing(true)}>
+              Editar perfil
+            </Button>
+          )}
           {!canTalk && (
             <LockedNote>
               {agent.isAssistant ? "Assistente pessoal: só conversa com a pessoa dona dele." : agent.accessMode === "owner" ? "Só conversa com o responsável." : "Você não está na lista de quem pode falar."}
@@ -163,6 +171,8 @@ function OverviewTab({ agent }: { agent: AgentDTO }) {
           </dd>
         </Card>
       </dl>
+
+      {editing && <EditAgentDialog agent={agent} onClose={() => setEditing(false)} />}
 
       <Card>
         <h3 className="mb-3 text-sm font-semibold">Uso neste mês</h3>

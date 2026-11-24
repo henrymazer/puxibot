@@ -407,8 +407,9 @@ export class WhatsAppChannel {
     const wait = Math.min(60_000, (this.o.reconnectBaseMs ?? 1000) * 2 ** Math.min(this.attempt, 6));
     this.attempt += 1;
     this.setState("connecting");
+    // Sem `unref`: logo depois de ler o QR o WhatsApp fecha a conexão e pede para reconectar. No comando
+    // de vínculo essa espera é a única coisa pendente, e o processo terminaria antes de concluir.
     this.reconnectTimer = setTimeout(() => this.connect(), wait);
-    this.reconnectTimer.unref();
   }
 
   // ---------- Entrada ----------

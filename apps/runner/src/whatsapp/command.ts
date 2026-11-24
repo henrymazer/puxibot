@@ -55,7 +55,10 @@ export async function whatsappConnect(o: ConnectOptions, out: (line: string) => 
   const mode: WaMode = o.numeroSeparado ? "bot" : "self-chat";
   const allowed = o.meuNumero?.replace(/[^\d]/g, "");
   if (mode === "bot" && !validPhone(allowed)) throw new Error("com --numero-separado, informe --meu-numero com o seu número pessoal (código do país e DDD, só dígitos; ex.: 5511999990000)");
-  if (await hasKeys()) throw new Error("já existe um WhatsApp vinculado neste computador. Rode `puxibot whatsapp desconectar` antes de vincular outro.");
+  // Chaves guardadas com o WhatsApp já ligado: é outro vínculo. Chaves sem a configuração: um vínculo que
+  // não chegou ao fim (o comando foi interrompido depois de ler o QR); ele é retomado, sem QR novo.
+  const resuming = await hasKeys();
+  if (resuming && cfg.whatsapp?.enabled) throw new Error("já existe um WhatsApp vinculado neste computador. Rode `puxibot whatsapp desconectar` antes de vincular outro.");
 
   out(RISK_NOTICE);
   out("");
@@ -73,6 +76,7 @@ export async function whatsappConnect(o: ConnectOptions, out: (line: string) => 
   }
   const lib = await loadBaileys();
   const store = fileSlotStore(whatsappPaths.session());
+  if (resuming) out("Há um vínculo iniciado e não concluído neste computador. Retomando...");
 
   let finish: (v: WaState) => void = () => {};
   const done = new Promise<WaState>((resolve) => (finish = resolve));
@@ -106,11 +110,15 @@ export async function whatsappConnect(o: ConnectOptions, out: (line: string) => 
       .finally(() => process.exit(130));
   };
   process.once("SIGINT", cancel);
+  // Mantém o processo vivo enquanto o vínculo não termina, mesmo nos instantes sem conexão aberta.
+  const alive = setInterval(() => {}, 1000);
   await channel.start();
   const state = await done;
+  clearInterval(alive);
   process.removeListener("SIGINT", cancel);
   if (state !== "connected") {
     await channel.stop();
+    if (resuming && state === "logged_out") throw new Error("o vínculo iniciado antes não vale mais. Rode o comando de novo para receber um QR code novo.");
     throw new Error(detail || "não foi possível vincular o WhatsApp.");
   }
   const own = channel.ownNumber();

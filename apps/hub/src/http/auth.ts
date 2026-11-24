@@ -164,7 +164,10 @@ export function hasRole(c: Context<WsEnv>, role: Role): boolean {
  */
 /** As duas chamadas da revisão de memória: ler as memórias atuais e mandar o resultado. */
 function isMemoryReviewRequest(method: string, pathname: string): boolean {
-  return (method === "GET" && pathname === "/api/tool/memories") || (method === "POST" && pathname === "/api/tool/memories/review");
+  return (
+    (method === "GET" && pathname === "/api/tool/memories") ||
+    (method === "POST" && (pathname === "/api/tool/memories/review" || pathname === "/api/tool/skills/learned"))
+  );
 }
 
 export const requireJob: MiddlewareHandler<ToolEnv> = async (c, next) => {

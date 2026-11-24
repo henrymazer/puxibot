@@ -21,6 +21,9 @@ import { miscRoutes } from "./routes/misc";
 import { routineRoutes } from "./routes/routines";
 import { taskRoutes } from "./routes/tasks";
 import { toolRoutes } from "./routes/tool";
+import { extraRoutes, vaultToolRoutes } from "./routes/extras";
+import { setupRoutes, setupToolRoutes } from "./routes/setup";
+import { trustRoutes } from "./routes/trust";
 import { wikiRoutes } from "./routes/wiki";
 import { registerDeliveries } from "./domain/deliveries";
 
@@ -51,8 +54,11 @@ const workspaceRouters: WsApp[] = [
   routineRoutes,
   miscRoutes,
   mcpRoutes,
+  trustRoutes,
+  setupRoutes,
+  extraRoutes,
 ];
-const toolRouters: ToolApp[] = [toolRoutes];
+const toolRouters: ToolApp[] = [toolRoutes, setupToolRoutes, vaultToolRoutes];
 
 export function buildApp(): Hono<BaseEnv> {
   const app = new Hono<BaseEnv>();

@@ -2,8 +2,11 @@
  * Execução de jobs: aceitar/rejeitar, heartbeat, streaming, cancelamento,
  * tempo limite e resultado.
  */
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
+  BROWSER_TOOL,
   CHILD_JOB_EXTRA_CAPACITY,
   JOB_HEARTBEAT_MS,
   type Cli,
@@ -15,10 +18,10 @@ import {
 import { ADAPTERS, CLI_ORDER, binPathFor } from "./adapters/index.js";
 import type { AdapterResult, CliAdapter, CliStatus } from "./adapters/types.js";
 import { paths, SessionStore, type RunnerConfig } from "./config.js";
-import { filterConnectorEnv } from "./adapters/types.js";
+import { filterConnectorEnv, type RunnerConnector } from "./adapters/types.js";
 import { ensureImage, hostExecutable, isLocalUrl, isolate, rejectedExecutables, type IsolationStatus } from "./isolation.js";
 import type { Logger } from "./log.js";
-import { buildMemoryReviewPrompt, fetchCurrentMemories, parseMemoryReview, sendMemoryReview } from "./memory.js";
+import { buildMemoryReviewPrompt, fetchCurrentMemories, parseMemoryReview, sendLearnedSkill, sendMemoryReview, shouldLearnSkill } from "./memory.js";
 import { childEnv, cleanEnv, spawnGroup, type RunningProcess } from "./proc.js";
 import { buildSystemPrompt, buildUserPrompt, ensureAgentDir, writeSkills } from "./prompt.js";
 import { selfCommand, selfCommandInContainer } from "./self.js";
@@ -49,6 +52,8 @@ interface ActiveJob {
   returned: boolean;
   heartbeat: NodeJS.Timeout;
   done: Promise<void>;
+  /** Ferramentas usadas no trabalho (resumos), para o procedimento aprendido. */
+  toolEvents: string[];
 }
 
 export class JobManager {
@@ -135,6 +140,7 @@ export class JobManager {
       returned: false,
       heartbeat: setInterval(() => this.opts.send({ type: "job.heartbeat", jobId: a.jobId }), this.heartbeatMs),
       done: Promise.resolve(),
+      toolEvents: [],
     };
     this.jobs.set(a.jobId, job);
     this.opts.send({ type: "job.accepted", jobId: a.jobId, cli, model });
@@ -214,9 +220,13 @@ export class JobManager {
    * Conectores do job, já filtrados: variáveis perigosas saem do ambiente do conector e, no
    * sandbox, conector stdio cujo comando está numa pasta escondida fica de fora.
    */
-  private prepareConnectors(job: ActiveJob, binPath: string, pathEnv: string): JobAssignment["connectors"] {
+  private prepareConnectors(job: ActiveJob, binPath: string, pathEnv: string, workdir: string): RunnerConnector[] {
     const a = job.assignment;
-    const out: JobAssignment["connectors"] = [];
+    const out: RunnerConnector[] = [];
+    // O intermediário de cada conector consulta o hub (checagem de permissão e registro das ações).
+    const hub = { url: this.hubUrlFor(a), token: a.jobToken };
+    const waitSeconds = this.opts.config.approvals?.waitSeconds;
+    const approvalWaitMs = typeof waitSeconds === "number" && waitSeconds > 0 ? Math.min(waitSeconds, 25 * 60) * 1000 : undefined;
     const warn = (summary: string) => {
       this.opts.logger.warn(`job ${a.jobId}: ${summary}`);
       this.opts.send({ type: "job.event", jobId: a.jobId, kind: "status", summary: summary.slice(0, 300) });
@@ -225,7 +235,7 @@ export class JobManager {
     for (const c of a.connectors) {
       const { env, dropped } = filterConnectorEnv(c.env);
       if (dropped.length) warn(`conector ${c.name}: variáveis ignoradas por segurança: ${dropped.join(", ")}`);
-      const conn = { ...c, env };
+      const conn: RunnerConnector = { ...c, env, hub, ...(approvalWaitMs ? { approvalWaitMs } : {}) };
       if (mode === "sandbox" && c.level !== "none" && c.transport === "stdio" && c.command) {
         const rej = rejectedExecutables(
           { mode, jobId: a.jobId, command: binPath, args: [], env: { PATH: pathEnv }, workdir: paths.agentDir(a.workspace.id, a.agent.id), writable: [], readable: [], credentials: [], executables: [c.command] },
@@ -241,7 +251,43 @@ export class JobManager {
       }
       out.push(conn);
     }
+    const browser = this.browserConnector(a, hub, workdir, warn);
+    if (browser) out.push({ ...browser, ...(approvalWaitMs ? { approvalWaitMs } : {}) });
     return out;
+  }
+
+  /**
+   * Navegador do agente: um servidor MCP do Playwright atrás do mesmo intermediário dos conectores.
+   * Só entra quando o agente tem o navegador ligado e quando a pessoa dona deste computador o ligou
+   * no config.json (`"browser": { "enabled": true }`).
+   */
+  private browserConnector(a: JobAssignment, hub: { url: string; token: string }, workdir: string, warn: (summary: string) => void): RunnerConnector | null {
+    if ((a.agent.toolPerms[BROWSER_TOOL] ?? "none") === "none") return null;
+    const cfg = this.opts.config.browser;
+    if (!cfg?.enabled) {
+      warn('navegador desligado neste computador: ligue com "browser": { "enabled": true } no config.json do runner');
+      return null;
+    }
+    if (this.opts.isolation === "container" && !cfg.command) {
+      warn("navegador indisponível no modo container (a imagem padrão não tem navegador); use o modo sandbox ou defina browser.command");
+      return null;
+    }
+    // Dentro do isolamento do runner o sandbox próprio do Chromium não sobe; o isolamento é o do runner.
+    const args = cfg.args ?? ["-y", "@playwright/mcp@latest", "--headless", "--isolated", ...(this.opts.isolation === "none" ? [] : ["--no-sandbox"])];
+    return {
+      id: BROWSER_TOOL,
+      name: "Navegador",
+      transport: "stdio",
+      url: null,
+      command: cfg.command ?? "npx",
+      args,
+      headers: {},
+      // O cache do npx fica na pasta do agente: a do seu usuário continua escondida no isolamento.
+      env: { npm_config_cache: path.join(workdir, ".cache", "npm") },
+      level: "write",
+      hub,
+      vault: a.vault ?? [],
+    };
   }
 
   // ---------- execução ----------
@@ -311,14 +357,16 @@ export class JobManager {
   private async reviewMemory(job: ActiveJob, adapter: CliAdapter, workdir: string, runDir: string, skills: string[], resultText: string): Promise<void> {
     const a = job.assignment;
     const cfg = this.opts.config.memory;
-    if (cfg?.auto === false || !adapter.utilityModel || a.agent.toolPerms.memory !== "write" || !resultText.trim()) return;
+    const learnSkill = this.opts.config.skills?.learn !== false && shouldLearnSkill(a, job.toolEvents);
+    const reviewMemory = cfg?.auto !== false && a.agent.toolPerms.memory === "write";
+    if ((!reviewMemory && !learnSkill) || !adapter.utilityModel || !resultText.trim()) return;
     const hubUrl = this.hubUrlFor(a);
     // A lista do trabalho é de antes de ele rodar; o agente pode tê-la mudado no caminho.
     const memories = await fetchCurrentMemories(a, hubUrl).catch((e: unknown) => {
       this.opts.logger.debug(`job ${a.jobId}: usando as memórias do início do trabalho (${String(e)})`);
       return a.memories;
     });
-    const prompt = buildMemoryReviewPrompt({ ...a, memories }, resultText);
+    const prompt = buildMemoryReviewPrompt({ ...a, memories: reviewMemory ? memories : [] }, resultText, { learnSkill, toolEvents: job.toolEvents });
     const result = await this.runOnce(job, adapter, workdir, runDir, skills, null, null, {
       system: prompt.system,
       user: prompt.user,
@@ -331,8 +379,11 @@ export class JobManager {
     const review = parseMemoryReview(result.text, prompt.aliases);
     const usage = { inputTokens: result.inputTokens, outputTokens: result.outputTokens };
     // Mesmo sem mudanças, o hub recebe o custo da revisão para somar ao trabalho.
-    const r = await sendMemoryReview(a, hubUrl, review, usage);
+    const r = reviewMemory ? await sendMemoryReview(a, hubUrl, review, usage) : await sendMemoryReview(a, hubUrl, { add: [], remove: [] }, usage);
     if (r.added || r.removed) this.opts.logger.info(`job ${a.jobId}: memória revisada (+${r.added}, −${r.removed})`);
+    if (learnSkill && review.skill && (await sendLearnedSkill(a, hubUrl, review.skill))) {
+      this.opts.logger.info(`job ${a.jobId}: procedimento aprendido ("${review.skill.name}")`);
+    }
   }
 
   /** Libera a vaga antes da mensagem final: o hub pode mandar o próximo job logo em seguida. */
@@ -365,7 +416,8 @@ export class JobManager {
     // variáveis de sessão). Isolada, recebe só uma lista curta (proc.ts), mais o que o
     // adaptador declara e o que a pessoa liberou em `env.pass`.
     const baseEnv = mode === "none" ? cleanEnv() : childEnv({ pass: this.opts.config.env?.pass, extra: adapter.authEnv });
-    const a: JobAssignment = { ...job.assignment, connectors: utility ? [] : this.prepareConnectors(job, binPath, baseEnv.PATH ?? process.env.PATH ?? "") };
+    const connectors = utility ? [] : this.prepareConnectors(job, binPath, baseEnv.PATH ?? process.env.PATH ?? "", workdir);
+    const a: JobAssignment = { ...job.assignment, connectors };
     const hubUrl = this.hubUrlFor(a);
     const mcp = mode === "container" ? selfCommandInContainer() : selfCommand();
     const mcpEnv: Record<string, string> = {
@@ -373,6 +425,7 @@ export class JobManager {
       PUXIBOT_JOB_TOKEN: a.jobToken,
       PUXIBOT_TOOL_PERMS: JSON.stringify(a.agent.toolPerms),
       PUXIBOT_AGENT_IS_ASSISTANT: a.agent.isAssistant ? "1" : "0",
+      PUXIBOT_AGENT_KIND: a.agent.systemKind ?? "",
       PUXIBOT_CHANNEL_ID: a.channel?.id ?? "",
     };
     const prepared = await adapter.prepare({
@@ -412,7 +465,8 @@ export class JobManager {
         env: prepared.env,
         workdir,
         writable: prepared.writable,
-        readable: prepared.readable,
+        // Navegadores que a pessoa instalou com `npx playwright install` ficam na pasta pessoal.
+        readable: connectors.some((c) => c.id === BROWSER_TOOL) ? [...prepared.readable, ...playwrightBrowserDirs()] : prepared.readable,
         credentials: prepared.credentials,
         // Comandos de conectores stdio também precisam existir dentro do sandbox.
         executables: a.connectors.filter((c) => c.level !== "none" && c.transport === "stdio" && c.command).map((c) => c.command!),
@@ -453,6 +507,7 @@ export class JobManager {
           } else if (utility) {
             // chamada utilitária: nada vai para a conversa
           } else if (ev.type === "tool") {
+            if (job.toolEvents.length < 200) job.toolEvents.push(ev.summary.slice(0, 300));
             this.opts.send({ type: "job.event", jobId: a.jobId, kind: "tool", summary: ev.summary.slice(0, 300) });
           } else if (ev.type === "model") {
             job.model = ev.model;
@@ -474,6 +529,13 @@ export class JobManager {
     if (job.cancelled || job.returned || job.timedOut) return null;
     return parser.finish(exit, stderr);
   }
+}
+
+/** Onde o Playwright guarda os navegadores baixados (Linux e macOS). */
+export function playwrightBrowserDirs(): string[] {
+  const custom = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  const dirs = custom ? [custom] : [path.join(os.homedir(), ".cache", "ms-playwright"), path.join(os.homedir(), "Library", "Caches", "ms-playwright")];
+  return dirs.filter((d) => existsSync(d));
 }
 
 const CLI_NAMES: Record<Cli, string> = { claude: "Claude Code", codex: "Codex", gemini: "Gemini CLI" };

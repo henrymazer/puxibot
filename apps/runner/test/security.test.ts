@@ -140,15 +140,18 @@ describe("2. variáveis de conector não entram no ambiente do isolamento", () =
     expect(r.dropped.sort()).toEqual(["CLAUDE_CONFIG_DIR", "CODEX_HOME", "GEMINI_CLI_HOME", "HOME", "LD_PRELOAD", "NODE_OPTIONS", "PATH", "PUXIBOT_JOB_TOKEN"]);
   });
 
-  it("Codex: o conector stdio vai pelo `puxibot mcp-exec`; PATH e segredos dele ficam fora do ambiente da CLI", async () => {
+  it("Codex: o conector vai pelo `puxibot mcp-proxy`; PATH e segredos dele não viram variáveis soltas no ambiente da CLI", async () => {
     const { a, workdir, runDir } = agentFixture("ag_codex_env", {
       connectors: [{ id: "c1", name: "gh", transport: "stdio", command: "/bin/true", args: [], url: null, headers: {}, env: { PATH: "/agente", GITHUB_TOKEN: "s3" }, level: "write" }],
     });
     const p = await codexAdapter.prepare(prepareInput(a, workdir, runDir));
     expect(p.env.PATH).toBe(process.env.PATH);
     expect(p.env.GITHUB_TOKEN).toBeUndefined();
-    expect(JSON.parse(p.env.PUXIBOT_CONN_CFG_0!)).toMatchObject({ command: "/bin/true", env: { GITHUB_TOKEN: "s3" } });
-    expect(p.args.join(" ")).toContain('mcp_servers.gh.args=["cli.js", "mcp-exec", "--config-env", "PUXIBOT_CONN_CFG_0"]');
+    // A configuração do conector vai inteira numa variável de nome fixo, lida só pelo intermediário
+    // (que tira de novo os nomes perigosos antes de iniciar o conector).
+    expect(JSON.parse(p.env.PUXIBOT_CONNECTOR_0!)).toMatchObject({ id: "c1", level: "write", command: "/bin/true", env: { GITHUB_TOKEN: "s3" } });
+    expect(p.args.join(" ")).toContain('mcp_servers.gh.args=["cli.js", "mcp-proxy", "--config-env", "PUXIBOT_CONNECTOR_0"]');
+    expect(p.args.join(" ")).toContain('mcp_servers.gh.env_vars=["PUXIBOT_CONNECTOR_0"]');
   });
 
   it("`puxibot mcp-exec` inicia o conector com as variáveis dele, sem as perigosas nem o token do job", () => {

@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { LoadingState } from "../../components/ui";
-import { Bell, Building2, KeyRound, Laptop, Plug, Settings, Sparkles, UserRound } from "lucide-react";
+import { Bell, Building2, KeyRound, Laptop, LockKeyhole, MessagesSquare, Plug, Settings, Sparkles, UserRound } from "lucide-react";
 import { PageHeader } from "../shell/PageHeader";
 import { useWsId } from "../shell/hooks";
 import { paths } from "../../lib/paths";
@@ -15,6 +15,8 @@ const SECTIONS = [
   { id: "workspace", label: "Workspace", icon: Building2 },
   { id: "skills", label: "Skills", icon: Sparkles },
   { id: "conectores", label: "Conectores", icon: Plug },
+  { id: "canais", label: "Canais de conversa", icon: MessagesSquare },
+  { id: "cofre", label: "Cofre", icon: LockKeyhole },
 ];
 
 export function SettingsLayout() {

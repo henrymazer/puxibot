@@ -233,7 +233,10 @@ describe("revisão automática de memória", () => {
   it("depois do job.done, chama a CLI sem ferramentas e manda ao hub o que guardar e apagar", async () => {
     writeFileSync(`${env.argsFile}.utility`, "");
     const before = hub.toolCalls.length;
-    const review = { add: [{ scope: "team", content: "O Acme paga no dia 20." }], remove: ["m1", "m2", "m9"] };
+    const review = {
+      add: [{ scope: "team", content: "O Acme paga no dia 20.", quote: "O Acme mudou o pagamento" }],
+      remove: [{ id: "m1", quote: "mudou o pagamento" }, { id: "m2", quote: "mudou" }, { id: "m9", quote: "mudou" }],
+    };
     const a = makeAssignment(hub.url, { prompt: `O Acme mudou o pagamento. REVIEW:${JSON.stringify(review)}`, memories });
     // O hub devolve a lista atual: o agente gravou uma memória durante o trabalho.
     hub.toolResponses.set("GET /api/tool/memories", [
@@ -254,7 +257,12 @@ describe("revisão automática de memória", () => {
     expect(call.method).toBe("POST");
     expect(call.auth).toBe(`Bearer ${a.jobToken}`);
     // m2 é fixa (escrita por uma pessoa) e m9 não existe: só o apelido removível vira id real.
-    expect(call.body).toEqual({ add: [{ scope: "team", content: "O Acme paga no dia 20." }], remove: ["mem_acme"], usage: { inputTokens: 700, outputTokens: 40 } });
+    // Cada mudança leva a citação do pedido; quem confere é o hub.
+    expect(call.body).toEqual({
+      add: [{ scope: "team", content: "O Acme paga no dia 20.", quote: "O Acme mudou o pagamento" }],
+      remove: [{ id: "mem_acme", quote: "mudou o pagamento" }],
+      usage: { inputTokens: 700, outputTokens: 40 },
+    });
 
     const u = utilArgs().at(-1)!;
     expect(u.argv[u.argv.indexOf("--tools") + 1]).toBe("");

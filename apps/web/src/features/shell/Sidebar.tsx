@@ -12,6 +12,7 @@ import {
   KanbanSquare,
   Lock,
   Plug,
+  ReceiptText,
   Plus,
   Search,
   Settings,
@@ -193,6 +194,7 @@ export function Sidebar({ onNavigate, autoFocus }: { onNavigate?: () => void; au
           <NavItem to={paths.routines(ws)} icon={<CalendarClock className="size-4" />} label="Rotinas" onNavigate={onNavigate} />
           <NavItem to={paths.settings(ws, "skills")} icon={<Sparkles className="size-4" />} label="Skills" onNavigate={onNavigate} />
           <NavItem to={paths.settings(ws, "conectores")} icon={<Plug className="size-4" />} label="Conectores" onNavigate={onNavigate} />
+          <NavItem to={paths.usage(ws)} icon={<ReceiptText className="size-4" />} label="Uso" onNavigate={onNavigate} />
         </ul>
       </nav>
 

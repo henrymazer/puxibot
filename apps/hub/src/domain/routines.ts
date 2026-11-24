@@ -3,6 +3,7 @@ import { all, first, newId, run } from "../lib/db";
 import { badRequest } from "../lib/errors";
 import { cronProblem, nextCronRun } from "../lib/cron";
 import { budgetState, getAgentRow } from "./agents";
+import { findOrCreateDm } from "./channels";
 import type { HubCtx } from "./context";
 import { createJob } from "./jobs";
 import { postDailySummary } from "./summary";
@@ -145,13 +146,16 @@ export async function executeRoutine(ctx: HubCtx, routine: RoutineRow, manualUse
   }
   if (agent.status === "paused") return { kind: routine.kind, job: null, messageId: null, skipped: "agent_paused" };
   if ((await budgetState(db, agent)).exhausted) return { kind: routine.kind, job: null, messageId: null, skipped: "budget" };
+  const prepare = routine.kind === "prepare";
   const job = await createJob(ctx, {
     agent,
-    origin: manualUserId ? "user" : "routine",
-    prompt: `Rotina "${routine.name}":\n\n${routine.prompt}`,
+    // "Executar agora" de uma preparação continua sendo preparação: ninguém pediu uma ação.
+    origin: manualUserId && !prepare ? "user" : "routine",
+    prompt: prepare ? routine.prompt : `Rotina "${routine.name}":\n\n${routine.prompt}`,
     channelId: routine.channel_id,
-    requestedByUserId: manualUserId,
+    requestedByUserId: prepare ? null : manualUserId,
     routineId: routine.id,
+    mode: prepare ? "prepare" : null,
   });
   return { kind: routine.kind, job, messageId: null, skipped: null };
 }
@@ -208,4 +212,58 @@ export async function wakeRoutineHubs(env: import("../env").AppEnv): Promise<num
     }
   }
   return rows.length;
+}
+
+// ---------- Preparação automática ----------
+export const PREPARE_DEFAULT_CRON = "0 8-18/2 * * 1-5";
+export const PREPARE_ROUTINE_NAME = "Preparação automática";
+
+export function preparePrompt(ownerName: string): string {
+  return (
+    `Preparação automática para ${ownerName}. Olhe as fontes a que você tem acesso (conectores, tarefas e conversas) e veja se há algo concreto e em aberto que valha adiantar: ` +
+    "um pedido sem resposta, um compromisso com prazo, um problema, um risco. Se houver, prepare um rascunho e avise em poucas frases, com uma pergunta que ofereça o próximo passo. " +
+    "Se não houver nada assim, termine com a resposta vazia."
+  );
+}
+
+/**
+ * Liga, ajusta ou desliga a preparação automática de um agente: uma rotina `prepare` que publica na DM entre
+ * o agente e o responsável. Os trabalhos dela nunca alteram um conector (ver `checkAction` e a API de ferramentas).
+ */
+export async function setProactive(
+  ctx: HubCtx,
+  agent: AgentRow,
+  input: { enabled: boolean; cron?: string; timezone?: string },
+): Promise<RoutineRow | null> {
+  const db = ctx.env.DB;
+  const existing = await first<RoutineRow>(db, "SELECT * FROM routines WHERE workspace_id = ? AND agent_id = ? AND kind = 'prepare'", ctx.wsId, agent.id);
+  if (!input.enabled) {
+    if (existing) await run(db, "DELETE FROM routines WHERE workspace_id = ? AND id = ?", ctx.wsId, existing.id);
+    return null;
+  }
+  const cron = (input.cron ?? existing?.cron ?? PREPARE_DEFAULT_CRON).trim().replace(/\s+/g, " ");
+  const timezone = input.timezone ?? existing?.timezone ?? DEFAULT_TIMEZONE;
+  assertValidSchedule(cron, timezone);
+  const owner = await first<{ name: string }>(db, "SELECT name FROM users WHERE id = ?", agent.owner_user_id);
+  const { channel } = await findOrCreateDm(db, ctx.wsId, { type: "user", id: agent.owner_user_id }, { type: "agent", id: agent.id }, agent.owner_user_id);
+  let row: RoutineRow;
+  if (existing) {
+    row = { ...existing, cron, timezone, enabled: 1, channel_id: channel.id };
+    row.next_run_at = computeNextRun(row);
+    await run(db, "UPDATE routines SET cron = ?, timezone = ?, enabled = 1, channel_id = ?, next_run_at = ? WHERE workspace_id = ? AND id = ?", cron, timezone, channel.id, row.next_run_at, ctx.wsId, existing.id);
+  } else {
+    row = await insertRoutine(db, ctx.wsId, {
+      agentId: agent.id,
+      name: PREPARE_ROUTINE_NAME,
+      prompt: preparePrompt(owner?.name ?? "a pessoa responsável"),
+      cron,
+      timezone,
+      channelId: channel.id,
+      enabled: true,
+      kind: "prepare",
+      createdBy: agent.owner_user_id,
+    });
+  }
+  await ctx.rt.pump();
+  return row;
 }

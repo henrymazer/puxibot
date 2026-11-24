@@ -43,7 +43,7 @@ export interface PrepareInput {
   resumeSessionId: string | null;
   isolation: IsolationMode;
   mcp: McpLaunch;
-  /** Como iniciar o `puxibot mcp-proxy` (intermediário dos conectores somente leitura). */
+  /** Como iniciar o `puxibot mcp-proxy` (intermediário entre a CLI e cada conector). */
   mcpProxy: McpLaunch;
   /**
    * Como iniciar o `puxibot mcp-exec` (lança um conector stdio com as variáveis dele, sem
@@ -153,23 +153,42 @@ export type ConnectorServer =
   | { transport: "http"; url: string; headers: Record<string, string> }
   | { transport: "stdio"; command: string; args: string[]; env: Record<string, string> };
 
+/** Conector do trabalho, com o que o intermediário precisa para consultar o hub. */
+export type RunnerConnector = JobAssignment["connectors"][number] & {
+  /** Hub e token do trabalho, para a checagem de permissão e o registro de cada chamada. */
+  hub?: { url: string; token: string };
+  /** Logins do cofre que o navegador pode usar (só nomes e sites). */
+  vault?: { name: string; origin: string }[];
+  /** Quanto esperar por uma aprovação (ms). */
+  approvalWaitMs?: number;
+};
+
 /**
- * Como a CLI deve iniciar um conector. Com `level: 'read'` a CLI fala com o
- * `puxibot mcp-proxy`, que só expõe as ferramentas marcadas `readOnlyHint` pelo servidor
- * (ver mcp/readonlyProxy.ts); a configuração do conector vai na variável `env`.
- * `null` = conector sem acesso ou incompleto.
+ * Como a CLI deve iniciar um conector: sempre pelo `puxibot mcp-proxy` (ver mcp/gateway.ts), que
+ * pergunta ao hub antes de cada chamada, só expõe as ferramentas de leitura quando o nível é `read`
+ * e marca os resultados como dados externos. A configuração do conector, com os segredos, vai na
+ * variável `env` (nunca em arquivo nem em argv). `null` = conector sem acesso ou incompleto.
  */
-export function connectorServer(c: JobAssignment["connectors"][number], proxy: McpLaunch, index: number): ConnectorServer | null {
+export function connectorServer(c: RunnerConnector, proxy: McpLaunch, index: number): ConnectorServer | null {
   if (c.level === "none") return null;
   const complete = (c.transport === "http" && !!c.url) || (c.transport === "stdio" && !!c.command);
   if (!complete) return null;
-  if (c.level === "read") {
-    const varName = `PUXIBOT_RO_CONNECTOR_${index}`;
-    const cfg = { name: c.name, transport: c.transport, url: c.url, headers: c.headers, command: c.command, args: c.args, env: c.env };
-    return { transport: "stdio", command: proxy.command, args: [...proxy.args, "--config-env", varName], env: { [varName]: JSON.stringify(cfg) } };
-  }
-  if (c.transport === "http") return { transport: "http", url: c.url!, headers: c.headers };
-  return { transport: "stdio", command: c.command!, args: c.args, env: c.env };
+  const varName = `PUXIBOT_CONNECTOR_${index}`;
+  const cfg = {
+    id: c.id,
+    name: c.name,
+    transport: c.transport,
+    url: c.url,
+    headers: c.headers,
+    command: c.command,
+    args: c.args,
+    env: c.env,
+    level: c.level,
+    ...(c.hub ? { hub: c.hub } : {}),
+    ...(c.vault?.length ? { vault: c.vault } : {}),
+    ...(c.approvalWaitMs ? { approvalWaitMs: c.approvalWaitMs } : {}),
+  };
+  return { transport: "stdio", command: proxy.command, args: [...proxy.args, "--config-env", varName], env: { [varName]: JSON.stringify(cfg) } };
 }
 
 // ---------- Classificação de erros comum ----------

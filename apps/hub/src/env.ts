@@ -12,6 +12,15 @@ export type AppEnv = Env & {
   TELEGRAM_WEBHOOK_SECRET?: string;
   /** Opcional: usuário do bot (sem @). Sem ele, o hub pergunta ao Telegram (getMe). */
   TELEGRAM_BOT_USERNAME?: string;
+  /** WhatsApp (Cloud API da Meta), para conversar com um agente pelo WhatsApp. Sem os quatro, desligado. */
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  /** Segredo do app da Meta: assina cada webhook (cabeçalho X-Hub-Signature-256). */
+  WHATSAPP_APP_SECRET?: string;
+  /** Texto que você escolhe e informa à Meta ao registrar o webhook. */
+  WHATSAPP_VERIFY_TOKEN?: string;
+  /** Opcional: o número, como as pessoas devem ver na tela (ex.: +55 11 99999-0000). */
+  WHATSAPP_DISPLAY_NUMBER?: string;
   /** "true" libera o cadastro sem convite. Padrão: só a primeira conta entra sem convite. */
   OPEN_SIGNUP?: string;
 };

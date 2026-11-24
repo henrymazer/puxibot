@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bot, Layers, MessageSquare, Network, Plus, UserPlus, Users } from "lucide-react";
+import { Bot, Layers, MessageSquare, Network, Plus, UserPlus, Users, Wand2 } from "lucide-react";
 import type { AgentDTO, MemberDTO } from "@puxibot/shared";
 import { useWorkspace } from "../../store/workspace";
 import { paths } from "../../lib/paths";
@@ -22,6 +22,8 @@ export function TeamPage() {
   const members = useWorkspace((s) => s.members);
   const agents = useWorkspace((s) => s.agents);
   const me = useWorkspace((s) => s.me);
+  const navigate = useNavigate();
+  const ws = useWsId();
   const [view, setView] = useState<View>(() => {
     try {
       const v = sessionStorage.getItem("tb-team-view");
@@ -46,7 +48,11 @@ export function TeamPage() {
 
   // Quem não é admin não vê a aba de governança, mesmo se ela ficou salva.
   const current: View = view === "governanca" && !admin ? "lista" : view;
-  const agentList = useMemo(() => Object.values(agents).sort((a, b) => a.name.localeCompare(b.name, "pt-BR")), [agents]);
+  // O agente criador de cada pessoa é só dela (e aparece na tela "Montar com o criador").
+  const agentList = useMemo(
+    () => Object.values(agents).filter((a) => a.systemKind !== "builder").sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
+    [agents],
+  );
   const memberList = useMemo(() => Object.values(members).sort((a, b) => a.name.localeCompare(b.name, "pt-BR")), [members]);
 
   return (
@@ -68,6 +74,12 @@ export function TeamPage() {
             </Button>
             <IconButton label="Convidar pessoas" onClick={() => setDialog("invite")} disabled={!admin} className="sm:hidden">
               <UserPlus className="size-4" />
+            </IconButton>
+            <Button variant="secondary" size="sm" icon={<Wand2 className="size-4" />} onClick={() => navigate(paths.setup(ws))} className="max-sm:hidden" title="Conte como você trabalha e o criador propõe agentes, canais e rotinas">
+              Montar com o criador
+            </Button>
+            <IconButton label="Montar com o criador" onClick={() => navigate(paths.setup(ws))} className="sm:hidden">
+              <Wand2 className="size-4" />
             </IconButton>
             <Button variant="primary" size="sm" icon={<Plus className="size-4" />} onClick={() => setDialog("agent")}>
               <span className="max-sm:hidden">Criar agente</span>

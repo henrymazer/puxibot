@@ -16,6 +16,7 @@
     "vapid": "node scripts/vapid-keys.mjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@puxibot/shared": "*",
     "hono": "^4.13.0",
     "zod": "^4.6.7"

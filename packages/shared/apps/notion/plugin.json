@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "notion",
+  "version": "1.0.0",
+  "description": "Buscar, ler e editar páginas e bancos de dados do Notion.",
+  "homepage": "https://www.notion.com",
+  "license": "MIT",
+  "extensions": { "io.puxibot": { "app": "./io.puxibot/app.json" } },
+  "author": { "name": "Puxibot" }
+}

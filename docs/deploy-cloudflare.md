@@ -256,6 +256,18 @@ curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=<PUBLIC_URL>/api/telegr
 
 Depois, cada pessoa liga os avisos em **Configurações › Notificações** na interface.
 
+O mesmo bot serve para **conversar com um agente**: em **Configurações › Canais de conversa**, a pessoa escolhe o agente, gera um código e envia `/start <código>` ao bot. Daí em diante, o que ela escrever no Telegram vira uma mensagem dela na DM com o agente, e a resposta volta por lá. Só conversa privada com o bot é aceita. Não testado com um bot real.
+
+### WhatsApp (conversar com um agente)
+
+Usa a API oficial da Meta (WhatsApp Cloud API). Não testado com uma conta real.
+
+1. No painel de desenvolvedores da Meta, crie um app com o produto WhatsApp e anote o ID do número de telefone, um token de acesso e o segredo do app.
+2. Defina os segredos com `npx wrangler secret put`: `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET` e `WHATSAPP_VERIFY_TOKEN` (um texto que você inventa). Opcional: `WHATSAPP_DISPLAY_NUMBER`, o número como as pessoas devem ver.
+3. No app da Meta, registre o webhook `<PUBLIC_URL>/api/whatsapp/webhook` com o mesmo texto de verificação e assine o campo `messages`.
+
+O hub recusa qualquer webhook sem a assinatura do app (`X-Hub-Signature-256`). Cada pessoa vincula o próprio número em **Configurações › Canais de conversa**, enviando `vincular <código>`. A plataforma do WhatsApp só deixa o número responder em até 24 horas depois da última mensagem da pessoa.
+
 ### Roteador (binding `AI`)
 
 O roteador usa um modelo pequeno do Workers AI (`@cf/meta/llama-3-8b-instruct`) para decidir qual agente responde a uma mensagem de canal sem `@menção`. Não testado com o Workers AI real.
@@ -264,6 +276,15 @@ O roteador usa um modelo pequeno do Workers AI (`@cf/meta/llama-3-8b-instruct`) 
 2. Um admin liga o roteador por workspace em **Configurações › Workspace**.
 
 Sem o binding, ou se o modelo falhar, o hub não roteia: só agentes mencionados, DMs e threads disparam trabalho.
+
+O mesmo binding liga outras duas coisas, também não testadas com o Workers AI real:
+
+- **Comparação das ações com o pedido** (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`): quando um agente quer executar uma ação num conector, o hub confere se o pedido da pessoa a cobre. Sem o binding, toda ação sem regra espera a aprovação do responsável. Veja [confianca.md](confianca.md).
+- **Transcrição de voz** (`@cf/openai/whisper-large-v3-turbo`): o botão de microfone da conversa manda o áudio ao hub. Sem o binding, a interface usa o ditado do próprio navegador, quando ele existe.
+
+### Login de conectores pelo site
+
+Para conectar serviços com login pelo site (Notion, Linear e outros), defina `PUBLIC_URL`: o endereço de retorno do login é `<PUBLIC_URL>/api/oauth/callback`. Veja [conexoes.md](conexoes.md).
 
 ## Domínio próprio
 

@@ -26,6 +26,8 @@ import { backfillRoutineSchedules, fireDueRoutines, nextRoutineRunAt } from "../
 import { addTaskComment } from "../domain/tasks";
 import { sanitizeCards } from "../domain/cards";
 import { links, notify } from "../domain/notify";
+import { closeJobActions } from "../domain/trust";
+import { deliverChatReply } from "../domain/chatChannels";
 import { toJobEventDTO, toRunnerDTO, type AgentRow, type JobRow, type RunnerRow } from "../domain/rows";
 
 /** Cabeçalhos que o Worker define ao repassar um upgrade de WebSocket já autenticado. */
@@ -682,6 +684,9 @@ export class WorkspaceHub extends DurableObject<AppEnv> {
         triggerJobs: false,
       });
     }
+    await closeJobActions(ctx, job.id);
+    // Pedido que chegou por Telegram ou WhatsApp: a resposta volta por lá também.
+    if (job.reply_via) await deliverChatReply(this.env, job, text).catch((err) => console.warn(JSON.stringify({ msg: "chat reply failed", error: String(err) })));
     await publishJob(ctx, job);
     await maybeWarnBudget(ctx, job.agent_id);
     this.needsPump = true;
@@ -728,6 +733,9 @@ export class WorkspaceHub extends DurableObject<AppEnv> {
     const name = agent?.name ?? "O agente";
     const reason = (job.error ?? "erro desconhecido").slice(0, 300);
     if (job.channel_id) await postSystemMessage(ctx, job.channel_id, `${name} parou com um erro: ${reason}`, job.thread_root_id);
+    if (job.reply_via) {
+      await deliverChatReply(this.env, job, `${name} não conseguiu terminar este pedido. Abra o Puxibot para ver o que houve.`).catch(() => {});
+    }
     if (agent) {
       await notify(ctx, {
         userId: agent.owner_user_id,
@@ -737,6 +745,7 @@ export class WorkspaceHub extends DurableObject<AppEnv> {
         link: job.channel_id ? links.channel(wsId, job.channel_id) : links.agent(wsId, agent.id),
       });
     }
+    await closeJobActions(ctx, job.id);
     await publishJob(ctx, job);
   }
 

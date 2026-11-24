@@ -1,0 +1,28 @@
+{
+  "displayName": "Meta Ads",
+  "categories": ["Marketing"],
+  "prompts": [
+    "Quanto gastamos e qual foi o custo por resultado de cada campanha nos últimos 7 dias?",
+    "Quais anúncios ativos estão com a frequência alta e o CTR caindo?",
+    "Monte um rascunho de campanha de tráfego para o lançamento e me mostre antes de criar."
+  ],
+  "requirements": [
+    "Conta de anúncios da Meta com acesso à conta que você quer gerenciar.",
+    "Token de acesso com as permissões ads_mcp_management e ads_read (leitura) ou ads_management (criar e editar)."
+  ],
+  "limitations": [
+    "O token de usuário do Explorador da Graph API expira em poucas horas; para uso contínuo, use um token de usuário do sistema com função Funcionário.",
+    "Tokens de usuário do sistema com função Admin não são aceitos pelo servidor da Meta.",
+    "Não há servidor oficial para Instagram orgânico nem para Páginas do Facebook."
+  ],
+  "connection": {
+    "type": "mcp",
+    "server": "meta-ads",
+    "authentication": ["bearer", "oauth2"],
+    "clientIdRequired": true
+  },
+  "hints": {
+    "token": "Gerenciador de Negócios › Configurações › Usuários do sistema: crie um usuário com função Funcionário, dê acesso à conta de anúncios e gere o token com ads_mcp_management e ads_read (ou ads_management).",
+    "clientId": "ID do seu app da Meta (developers.facebook.com › Meus apps), com o caso de uso \"Criar e gerenciar anúncios com o servidor MCP de anúncios\"."
+  }
+}

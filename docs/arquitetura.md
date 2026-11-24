@@ -25,8 +25,10 @@ apps/
     src/api/      cliente HTTP da API do hub
     src/realtime/ WebSocket do navegador e redutor de eventos
     public/       service worker (sw.js), manifesto, tela offline e _headers (CSP dos arquivos estáticos)
+  evals/     Avaliações: hub e runner de verdade, serviço externo simulado (docs/avaliacoes.md)
 packages/
   shared/    Tipos, esquemas zod e constantes compartilhados (DTOs, protocolo do runner)
+    apps/    Catálogo de conectores: uma pasta por app, no formato Agent Plugins (docs/conexoes.md)
 scripts/     dev.mjs (npm run dev), deploy-hub.mjs (npm run deploy)
 docs/        documentação
 ```
@@ -71,8 +73,9 @@ Navegador          Hub (Worker)            WorkspaceHub (DO)        Runner      
 2. **Job**: o `WorkspaceHub` (um Durable Object por workspace) cria o job e escolhe o runner: o pai, em consulta entre agentes; o de quem pediu; o do responsável pelo agente; ou nenhum, e o job espera na fila. A entrega é única e tem prazo (lease); se o runner cair, o job volta para a fila.
 3. **Runner**: recebe `job.assign` pelo WebSocket `/api/workspaces/:ws/runner`, confirma com `job.accepted`, prepara a pasta de trabalho do agente, escreve as instruções e o contexto (`src/prompt.ts`) e escolhe o adaptador da CLI (`src/adapters`).
 4. **Isolamento**: `src/isolation.ts` envolve o comando da CLI com bubblewrap, Seatbelt ou container.
-5. **Ferramentas**: a CLI inicia o `puxibot mcp` (servidor MCP por stdio). Cada ferramenta (`src/mcp/tools.ts`) chama `/api/tool/*` no hub com o token de job (`tbj_...`, assinado com `JOB_TOKEN_SECRET`), que vale só enquanto o job roda. O hub confere as permissões do agente em cada chamada (`src/routes/tool.ts`).
-6. **Resposta**: o runner repassa o texto em streaming (`job.stream`) e, no fim, `job.done` com tokens e texto. O DO grava, cria a mensagem do agente na conversa e distribui os eventos aos navegadores (`ClientEvent`).
+5. **Conectores**: cada conector liberado (e o navegador) chega à CLI por um intermediário, o `puxibot mcp-proxy` (`src/mcp/gateway.ts`). Antes de cada chamada ele pergunta ao hub se a ação pode rodar (`/api/tool/actions`, decidido em `apps/hub/src/domain/trust.ts`) e devolve o resultado marcado como dado externo. Veja [confianca.md](confianca.md).
+6. **Ferramentas**: a CLI inicia o `puxibot mcp` (servidor MCP por stdio). Cada ferramenta (`src/mcp/tools.ts`) chama `/api/tool/*` no hub com o token de job (`tbj_...`, assinado com `JOB_TOKEN_SECRET`), que vale só enquanto o job roda. O hub confere as permissões do agente em cada chamada (`src/routes/tool.ts`).
+7. **Resposta**: o runner repassa o texto em streaming (`job.stream`) e, no fim, `job.done` com tokens e texto. O DO grava, cria a mensagem do agente na conversa e distribui os eventos aos navegadores (`ClientEvent`).
 
 Dados: o D1 guarda tudo o que é relacional, inclusive mensagens e jobs; o R2 guarda os arquivos. O Durable Object coordena (conexões WebSocket hibernáveis, entrega dos jobs, prazos, alarme das rotinas) e guarda no próprio armazenamento só o id do workspace e o alarme.
 

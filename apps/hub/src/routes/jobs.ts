@@ -7,6 +7,8 @@ import { readBody } from "../lib/validate";
 import { isAdmin } from "../http/auth";
 import type { WsEnv } from "../http/types";
 import { getAgentRow } from "../domain/agents";
+import { applyActionDecision } from "../domain/trust";
+import { answerSecretRequest, secretAnswerSchema } from "../domain/secretRequests";
 import { cancelJob, getJobRow, publishApproval, publishJob, retryJob } from "../domain/jobs";
 import { toJobDTO, type ApprovalRow, type JobRow } from "../domain/rows";
 import { filterVisibleJobs, jobDTOFor, jobsWithVisibleContent } from "./agents";
@@ -85,6 +87,10 @@ jobRoutes.get("/approvals", async (c) => {
 const decideSchema = z.object({
   decision: z.enum(["approved", "rejected"]),
   note: z.string().max(1000).optional(),
+  /** Só em aprovação de ação: vale só esta vez, até o fim do trabalho, ou sempre (vira regra do agente). */
+  scope: z.enum(["once", "job", "always"]).default("once"),
+  /** Só em pedido de segredo: o valor digitado (e o usuário, em login de site). Nunca volta na resposta. */
+  ...secretAnswerSchema.shape,
 });
 
 jobRoutes.post("/approvals/:id/decide", async (c) => {
@@ -95,21 +101,32 @@ jobRoutes.post("/approvals/:id/decide", async (c) => {
   const body = await readBody(c, decideSchema);
   const approval = await first<ApprovalRow>(db, "SELECT * FROM approvals WHERE workspace_id = ? AND id = ?", wsId, c.req.param("id"));
   if (!approval) throw notFound("Aprovação não encontrada.");
+  if (approval.kind === "secret") return c.json(await answerSecretRequest(hub, approval, userId, body), 200, { "Cache-Control": "no-store" });
   if (approval.approver_user_id !== userId && !isAdmin(c)) throw forbidden("Só o responsável ou um admin decide esta aprovação.");
   const now = Date.now();
   const changed = await run(
     db,
-    `UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?
+    `UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, scope = ?
      WHERE workspace_id = ? AND id = ? AND status = 'pending'`,
     body.decision,
     userId,
     now,
     body.note ?? null,
+    approval.action_id ? body.scope : null,
     wsId,
     approval.id,
   );
   if (changed === 0) throw conflict("Esta aprovação já foi decidida.", "approval_decided");
-  const decided: ApprovalRow = { ...approval, status: body.decision, decided_by: userId, decided_at: now, decision_note: body.note ?? null };
+  const decided: ApprovalRow = {
+    ...approval,
+    status: body.decision,
+    decided_by: userId,
+    decided_at: now,
+    decision_note: body.note ?? null,
+    scope: approval.action_id ? body.scope : null,
+  };
+  // Antes de avisar a tela: o intermediário do runner já pode consultar o estado da ação.
+  await applyActionDecision(hub, decided, body.decision, body.scope, userId);
   const dto = await publishApproval(hub, decided);
 
   if (approval.kind === "job_start" && approval.job_id) {

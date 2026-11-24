@@ -648,6 +648,9 @@ export function createDemoBackend() {
       budgetTokensMonth: null,
       budgetRunsMonth: null,
       selfStartPolicy: "ask",
+      trustMode: "ask",
+      systemKind: null,
+      learnSkills: true,
       maxConcurrentJobs: 2,
       maxPrsPerHour: 3,
       status: "active",
@@ -669,7 +672,8 @@ export function createDemoBackend() {
     if (!admin && a.ownerUserId !== db.user.id) throw new HttpError(403, "forbidden", "Só o responsável ou um admin muda este agente.");
     if (!admin && ("ownerUserId" in body || "budgetRunsMonth" in body || "budgetTokensMonth" in body))
       throw new HttpError(403, "forbidden", "Só admins mudam o responsável e o orçamento.");
-    Object.assign(a, body, { updatedAt: Date.now() });
+    // Como no hub: `toolPerms` no pedido traz só as chaves que mudaram.
+    Object.assign(a, body, { toolPerms: { ...a.toolPerms, ...(body.toolPerms ?? {}) }, updatedAt: Date.now() });
     emit({ type: "agent.upserted", agent: { ...a } });
     return a;
   });
@@ -766,6 +770,11 @@ export function createDemoBackend() {
     if (!a) throw new HttpError(404, "not_found", "Aprovação não encontrada.");
     if (a.status !== "pending") throw new HttpError(409, "decided", "Essa aprovação já foi decidida.");
     Object.assign(a, { status: body.decision, decidedBy: db.user.id, decidedAt: Date.now(), decisionNote: body.note ?? null });
+    if (a.kind === "secret") {
+      // Demonstração: o valor digitado é descartado.
+      emit({ type: "approval.upserted", approval: { ...a } });
+      return a;
+    }
     emit({ type: "approval.upserted", approval: { ...a } });
     const job = a.jobId ? db.jobs.find((j) => j.id === a.jobId) : undefined;
     const agent = db.agents.find((x) => x.id === a.agentId);

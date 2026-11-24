@@ -1,3 +1,4 @@
+import { approvalsToDTO } from "../domain/trust";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { createWorkspaceSchema, ROLES, type BootstrapDTO, type MemberDTO } from "@puxibot/shared";
@@ -11,7 +12,6 @@ import { listAgents } from "../domain/agents";
 import { listVisibleChannels } from "../domain/channels";
 import { listMembersWithUsers } from "../domain/members";
 import {
-  toApprovalDTO,
   toMemberDTO,
   toRunnerDTO,
   toSectorDTO,
@@ -71,7 +71,7 @@ export async function visibleApprovals(c: Context<WsEnv>, status: string | strin
   }
   sql += " ORDER BY created_at DESC LIMIT 200";
   const rows = await all<ApprovalRow>(c.env.DB, sql, ...params);
-  return rows.map(toApprovalDTO);
+  return approvalsToDTO(c.env.DB, wsId, rows);
 }
 
 workspaceRoutes.get("/", async (c) => {

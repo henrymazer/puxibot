@@ -124,6 +124,8 @@ export async function consultAgent(
       `Responda de forma completa e autoexplicativa: sua resposta volta direto para ${input.caller.name}.`,
     requestedByUserId: input.job.requested_by_user_id,
     parentJobId: input.job.id,
+    // Quem é consultado numa preparação automática também só lê e rascunha.
+    mode: input.job.mode ?? null,
   });
   const result = await waitForJob(db, ctx.wsId, child.id, {
     timeoutMs: input.timeoutMs,

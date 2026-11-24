@@ -248,6 +248,7 @@ Base `/api/tool`, autenticada com token de job. O agente do token é o ator. Cad
 | `listar_time` | GET `/api/tool/team` (pessoas e agentes, com função) | agents:read |
 | `consultar_agente` | POST `/api/tool/agents/:handle/ask` `{ prompt }` → cria job filho e espera (long-poll, até o timeout) → `{ text }`. Respeita `agentsCanConsult` do alvo, `callableAgents*` do chamador e o "quem pode falar" do alvo para a pessoa por quem o chamador age (403 `consult_denied`). | agents:write |
 | `pedir_aprovacao` | POST `/api/tool/approvals` `{ title, details }` → cria aprovação `action`; GET `/api/tool/approvals/:id` para aguardar a decisão. | sempre permitido |
+| `pedir_segredo` | POST `/api/tool/secret-requests` `{ label, reason, url?, target: { kind: 'vault', name, site, username? } \| { kind: 'connector', connector } }` → `ApprovalDTO` com `kind = 'secret'`; GET `/api/tool/approvals/:id` para aguardar. O valor nunca volta. | sempre permitido |
 | `criar_agente`, `criar_rotina` | POST `/api/tool/agents`, POST `/api/tool/routines` | só assistente pessoal (age como o dono) |
 | `reportar_progresso` | POST `/api/tool/progress` `{ summary }` → `job_events` | sempre permitido |
 
@@ -284,6 +285,59 @@ Respostas e regras da API de ferramentas (segunda leva):
 - `POST /agents` e `POST /routines`: só assistente pessoal (`isAssistant`) em job pedido pelo dono (ou sem pedido humano); senão 403 `assistant_only`. Agente criado tem o dono do assistente como responsável → `AgentDTO` (201). Rotina: agente alvo do qual o dono é responsável (ou o dono é admin); `channel` precisa ser visível ao dono e não `humansOnly`; sem `channel`: o canal do job (se o alvo é o próprio assistente) ou a DM dono↔alvo → `RoutineDTO` (201).
 - `POST /progress` `{ summary }` → `{ ok: true, event: JobEventDTO }` (201), grava `job_events` (`note`) e emite `job.event`.
 
+## Terceira leva: confiança, conexões e agente criador
+
+Guias: [confianca.md](confianca.md) e [conexoes.md](conexoes.md). Migração `0005_trust_connections_builder.sql`.
+
+### Ações em conectores e no navegador (token de job)
+
+Usadas pelo intermediário de conectores do runner (`puxibot mcp-proxy`), não pelo agente.
+
+| Rota | Corpo → resposta |
+|---|---|
+| POST `/api/tool/actions` | `{ connectorId, tool, readOnly, args? }` → `{ actionId, decision: 'allow'|'ask'|'deny', reason, approvalId? }`. `connectorId` é o id do conector ou `"browser"`. 403 `tool_permission_denied` se o agente não tem acesso ao conector, ou se tem só leitura e `readOnly` é falso. |
+| GET `/api/tool/actions/:id` | → `{ actionId, decision, reason }` (para esperar a aprovação) |
+| POST `/api/tool/actions/:id/result` | `{ ok, error? }`. Só para ação liberada (400 senão). |
+| POST `/api/tool/vault/use` | `{ name }` → mesma resposta de `/actions` (ferramenta `cofre_entrar`). 404 se o login não está disponível para o trabalho. |
+| POST `/api/tool/vault/secret` | `{ actionId }` → `{ username, password, origin }`, uma única vez (409 `vault_already_used` depois). |
+| POST `/api/tool/skills/learned` | `{ name, description, body }` → `{ id, updated }`. Procedimento aprendido; aceito também na janela de 3 minutos depois do fim do trabalho. 403 se o agente está com o aprendizado desligado. |
+
+Ordem da decisão em `/actions`: regra `deny` → leitura (a menos de regra `ask`) → preparação automática (nega escrita) → regra `allow` → liberação "neste trabalho" → `trustMode = 'auto'` → comparação com o pedido (binding `AI`, com citação conferida) → senão cria uma aprovação `action` com `actionId` e responde `ask`.
+
+Mudanças na API de ferramentas existente:
+
+- `POST /memories` aceita `quote`. Com citação conferida nas palavras de uma pessoa da conversa → `status: 'confirmed'`; senão `'tentative'`.
+- `POST /memories/review`: cada item de `add` leva `quote`; `remove` é `[{ id, quote }]`. Itens sem citação conferida são ignorados (inclusive `remove` no formato antigo, só com ids).
+- Em trabalho com `mode = 'prepare'`, toda escrita responde 403 `prepare_read_only`, menos `drive`.
+- `JobAssignment` ganhou `mode`, `replyVia`, `vault[]`, `agent.learnSkills`, `agent.systemKind`, `agent.skills[].learned` e `memories[].tentative`. Todo conector liberado chega ao agente pelo intermediário.
+
+### Rotas do workspace
+
+| Rota | O que faz |
+|---|---|
+| GET `/connectors/catalog` | `{ items: CatalogApp[], callbackUrl }` |
+| POST `/connectors/from-catalog` | `{ catalogId, method, token?, clientId?, name?, grantAgentIds? }` → `ConnectorDTO` (201). O endereço vem da receita. |
+| POST `/connectors/:id/oauth/start` | → `{ url }` (tela de consentimento do serviço). Só o dono. |
+| POST `/connectors/:id/grant` | `{ agentIds }`: libera para agentes que quem chama administra. Só o dono do conector. |
+| GET `/api/oauth/callback` (fora do workspace) | Retorno do login: sempre 302 para `/w/<ws>/config/conectores?oauth=ok|erro`. |
+| GET/PUT/DELETE `/agents/:id/trust-rules[/:rid]` | Regras `{ connectorId, tool, effect: 'allow'|'ask'|'deny' }`. Responsável ou admin; `allow` em conector só por quem o conectou. |
+| PUT `/agents/:id/proactive` | `{ enabled, cron?, timezone? }` → `{ routine }` (rotina `kind = 'prepare'`). Só o responsável liga. |
+| POST `/approvals/:id/decide` | Aceita `scope: 'once'|'job'|'always'` em aprovação de ação. |
+| POST `/approvals/:id/decide` (pedido de segredo) | Em `kind = 'secret'`: `{ decision: 'approved', secret, username? }` guarda o valor no destino (`ApprovalDTO.secret`); `{ decision: 'rejected' }` recusa. Só o `approverUserId`, nem admin. A resposta não traz o valor. |
+| GET `/usage`, `/usage/summary`, `/usage/export` | Trabalhos com as ações e os motivos, resumo do mês e CSV. `?period=AAAA-MM&agentId=`. |
+| POST `/setup/session` | Abre a conversa com o agente criador → `{ agentId, channelId, plan }`. Idempotente. |
+| GET `/setup/plan`, PUT `/setup/plans/:id`, POST `/setup/plans/:id/apply`, POST `/setup/plans/:id/discard` | Plano da pessoa: ler, editar, criar tudo, descartar. |
+| POST `/api/tool/setup/plan`, GET `/api/tool/setup/catalog` (token de job) | Só o agente criador: entregar o plano e ver o catálogo. |
+| GET/POST `/chat-links`, DELETE `/chat-links/:provider` | Conversa por Telegram ou WhatsApp com um agente. |
+| GET/POST `/vault`, PATCH/DELETE `/vault/:id` | Logins de sites da própria pessoa. A senha nunca volta. |
+| POST `/transcribe` | Áudio (`audio/*`, até 8 MB) → `{ text }`. 404 sem o binding `AI`. |
+| GET `/features` | `{ transcription, telegramChat, whatsappChat, trustModel }` |
+| POST/PATCH memórias: `…/memories/:mid/confirm` | Confirma uma memória não confirmada. |
+
+Webhooks: `POST /api/telegram/webhook/:secret` (agora também recebe mensagens para o agente vinculado) e `GET`/`POST /api/whatsapp/webhook` (verificação e mensagens; o POST exige `X-Hub-Signature-256`).
+
+Evento de tempo real novo: `setup.plan.upserted` (só para a dona do plano).
+
 ## Servidor MCP do hub
 
 `POST /api/workspaces/:ws/mcp` (Streamable HTTP, token pessoal). Permite que Claude, Cursor etc. usem o workspace: `listar_agentes`, `criar_agente`, `pedir_ao_agente` (cria job e devolve a resposta), `criar_rotina`, `criar_tarefa`, `listar_tarefas`, `buscar`. Age com as permissões da pessoa dona do token.
@@ -293,6 +347,7 @@ Implementação: servidor **sem estado**, JSON-RPC 2.0 à mão (sem SDK), respos
 ## Configuração do Worker
 
 Bindings: `DB` (D1), `FILES` (R2), `WORKSPACE_HUB` (Durable Object, classe SQLite), `ASSETS` (interface web), `AI` (opcional, só em produção).
+Com o binding `AI`, além do roteador: a checagem de ações compara a ação com o pedido (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) e a rota `/transcribe` funciona (`@cf/openai/whisper-large-v3-turbo`). Opcionais do WhatsApp: `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_DISPLAY_NUMBER`.
 Segredos/variáveis: `JOB_TOKEN_SECRET`, `SECRETS_KEY` (AES-GCM, base64 de 32 bytes), `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_BOT_USERNAME` (opcional; sem ele o hub usa `getMe`), `PUBLIC_URL`. Os de push e Telegram são opcionais; sem eles o recurso fica desligado, sem erro. Par VAPID: `npm run vapid -w @puxibot/hub` (chave pública = ponto P-256 não comprimido em base64url, privada = 32 bytes em base64url).
 Cron do Worker: `*/30 * * * *` (`triggers.crons`), rede de segurança das rotinas.
 `wrangler dev` precisa funcionar sem login na Cloudflare.

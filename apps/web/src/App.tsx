@@ -32,6 +32,10 @@ const WorkspaceSettings = lazyNamed(() => import("./features/settings/WorkspaceS
 const SkillsSettings = lazyNamed(() => import("./features/settings/SkillsSettings"), "SkillsSettings");
 const ConnectorsSettings = lazyNamed(() => import("./features/settings/ConnectorsSettings"), "ConnectorsSettings");
 const NotificationsSettings = lazyNamed(() => import("./features/settings/NotificationsSettings"), "NotificationsSettings");
+const ChatChannelsSettings = lazyNamed(() => import("./features/settings/ChatChannelsSettings"), "ChatChannelsSettings");
+const VaultSettings = lazyNamed(() => import("./features/settings/VaultSettings"), "VaultSettings");
+const SetupPage = lazyNamed(() => import("./features/setup/SetupPage"), "SetupPage");
+const UsagePage = lazyNamed(() => import("./features/usage/UsagePage"), "UsagePage");
 const PairPage = lazyNamed(() => import("./features/settings/PairPage"), "PairPage");
 
 export function Page({ children }: { children: ReactNode }) {
@@ -118,6 +122,8 @@ export function App() {
             <Route path="drive" element={p(<DrivePage />)} />
             <Route path="rotinas" element={p(<RoutinesPage />)} />
             <Route path="boas-vindas" element={p(<OnboardingPage />)} />
+            <Route path="montar" element={p(<SetupPage />)} />
+            <Route path="uso" element={p(<UsagePage />)} />
             {/* Aliases dos links de notificação gerados pelo hub. */}
             <Route path="approvals" element={<Navigate to="../aprovacoes" replace />} />
             <Route path="agents/:agentId" element={<AgentLinkRedirect />} />
@@ -135,6 +141,8 @@ export function App() {
               <Route path="workspace" element={p(<WorkspaceSettings />)} />
               <Route path="skills" element={p(<SkillsSettings />)} />
               <Route path="conectores" element={p(<ConnectorsSettings />)} />
+              <Route path="canais" element={p(<ChatChannelsSettings />)} />
+              <Route path="cofre" element={p(<VaultSettings />)} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Route>

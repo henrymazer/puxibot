@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "linear",
+  "version": "1.0.0",
+  "description": "Encontrar e trabalhar com projetos e issues do Linear.",
+  "homepage": "https://linear.app",
+  "license": "MIT",
+  "extensions": { "io.puxibot": { "app": "./io.puxibot/app.json" } },
+  "author": { "name": "Puxibot" }
+}

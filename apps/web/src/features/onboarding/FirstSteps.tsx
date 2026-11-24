@@ -33,7 +33,7 @@ export function useChecklist(progress: OnboardingProgress) {
   }, [agents, runners, members, channels, myUserId, tasks, tasksLoaded, progress.kind, progress.invited]);
 }
 
-const STEP_FOR: Partial<Record<ChecklistId, StepId>> = { agente: "time", computador: "computador", convite: "convite" };
+const STEP_FOR: Partial<Record<ChecklistId, StepId>> = { agente: "montar", computador: "computador", convite: "convite" };
 
 export function FirstSteps({
   ws,

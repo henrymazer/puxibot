@@ -155,11 +155,11 @@ program
 
 program
   .command("mcp-proxy", { hidden: true })
-  .description("intermediário somente leitura para conectores (iniciado pela CLI de IA durante um job)")
+  .description("intermediário entre a CLI de IA e um conector: checa a permissão de cada ação no hub (iniciado durante um job)")
   .requiredOption("--config-env <nome>", "variável de ambiente com a configuração do conector")
   .action(async (o: { configEnv: string }) => {
-    const { runReadOnlyProxy } = await import("./mcp/readonlyProxy.js");
-    await runReadOnlyProxy(o.configEnv);
+    const { runConnectorGateway } = await import("./mcp/gateway.js");
+    await runConnectorGateway(o.configEnv);
   });
 
 program

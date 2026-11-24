@@ -69,6 +69,7 @@ describe("servidor MCP nativo (puxibot mcp)", () => {
         "listar_time",
         "consultar_agente",
         "pedir_aprovacao",
+        "pedir_segredo",
         "criar_agente",
         "criar_rotina",
         "reportar_progresso",

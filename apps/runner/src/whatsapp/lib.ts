@@ -5,6 +5,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { puxibotHome } from "../config.js";
@@ -54,7 +55,17 @@ export async function installBaileys(onLine: (line: string) => void = () => {}):
   if (!baileysInstalled()) throw new Error("a biblioteca do WhatsApp não ficou instalada na versão esperada");
 }
 
+/**
+ * O Node tenta IPv6 e IPv4 em sequência e dá só 250 ms para cada tentativa. Em redes onde o IPv6 não
+ * funciona e o IPv4 demora um pouco mais (comum no WSL), toda conexão ao WhatsApp falha com o código 408.
+ * Um prazo maior por tentativa resolve sem forçar uma família de endereço.
+ */
+export function relaxConnectTimeout(): void {
+  if (net.getDefaultAutoSelectFamilyAttemptTimeout() < 5000) net.setDefaultAutoSelectFamilyAttemptTimeout(5000);
+}
+
 export async function loadBaileys(): Promise<WaLib> {
+  relaxConnectTimeout();
   if (!baileysInstalled()) throw new Error("a biblioteca do WhatsApp não está instalada. Rode `puxibot whatsapp conectar`.");
   const pkg = JSON.parse(readFileSync(path.join(packageDir(), "package.json"), "utf8")) as { main?: string };
   const mod = (await import(pathToFileURL(path.join(packageDir(), pkg.main ?? "lib/index.js")).href)) as Record<string, unknown>;

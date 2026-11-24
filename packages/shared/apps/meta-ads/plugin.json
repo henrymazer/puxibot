@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "meta-ads",
+  "version": "1.0.0",
+  "description": "Relatórios e gestão de campanhas, conjuntos e anúncios da Meta (Facebook e Instagram).",
+  "homepage": "https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-overview",
+  "license": "MIT",
+  "extensions": { "io.puxibot": { "app": "./io.puxibot/app.json" } },
+  "author": { "name": "Puxibot" }
+}

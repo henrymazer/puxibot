@@ -1,0 +1,11 @@
+{
+  "displayName": "Notion",
+  "categories": ["Documentos"],
+  "prompts": [
+    "Ache a página de onboarding de clientes e resuma os passos.",
+    "Quais itens do banco de dados Projetos estão atrasados?"
+  ],
+  "requirements": ["Conta do Notion com acesso às páginas que o agente vai usar."],
+  "limitations": ["O agente só enxerga as páginas que você liberar na tela de consentimento do Notion."],
+  "connection": { "type": "mcp", "server": "notion", "authentication": ["oauth2"] }
+}

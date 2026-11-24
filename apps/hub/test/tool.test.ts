@@ -179,10 +179,11 @@ describe("API de ferramentas", () => {
 
     const review = await tokenReq<{ added: number; removed: number }>(t, "POST", "/api/tool/memories/review", {
       add: [
-        { scope: "team", content: "O Acme paga no dia 20" },
-        { scope: "team", content: "regra escrita pela pessoa" }, // repetida (só muda a caixa): não entra de novo
+        // Cada mudança leva um trecho literal do pedido da pessoa ("faça coisas"); o hub confere no banco.
+        { scope: "team", content: "O Acme paga no dia 20", quote: "faça coisas" },
+        { scope: "team", content: "regra escrita pela pessoa", quote: "faça coisas" }, // repetida (só muda a caixa): não entra de novo
       ],
-      remove: [mine.body.id, human.body.id, otherMem.body.id],
+      remove: [mine.body.id, human.body.id, otherMem.body.id].map((id) => ({ id, quote: "faça coisas" })),
       usage: { inputTokens: 700, outputTokens: 40 },
     });
     expect(review.status).toBe(200);

@@ -5,19 +5,19 @@
  */
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import { extractMentions, handleSchema, MEMORY_REVIEW_MAX_ADD, MEMORY_REVIEW_MAX_CHARS, MEMORY_REVIEW_MAX_REMOVE, TASK_PRIORITIES, TASK_STATUSES, userHandle, type ActorRef, type NativeTool, type ToolLevel } from "@puxibot/shared";
+import { BROWSER_TOOL, LEARNED_SKILL_MAX_CHARS, LEARNED_SKILLS_PER_AGENT, extractMentions, handleSchema, MEMORY_REVIEW_MAX_ADD, MEMORY_REVIEW_MAX_CHARS, MEMORY_REVIEW_MAX_REMOVE, TASK_PRIORITIES, TASK_STATUSES, userHandle, type ActorRef, type NativeTool, type ToolLevel } from "@puxibot/shared";
 import { all, first, newId, placeholders, run } from "../lib/db";
 import { badRequest, forbidden, HttpError, notFound } from "../lib/errors";
 import { intParam, readBody } from "../lib/validate";
 import type { ToolEnv } from "../http/types";
 import { agentActor, jobPrincipal, type Actor } from "../domain/actor";
 import { cardsSchema } from "../domain/cards";
-import { createAgent, requireAgentRow, toolPerms } from "../domain/agents";
+import { createAgent, publishAgent, requireAgentRow, toolPerms } from "../domain/agents";
 import { findOrCreateDm } from "../domain/channels";
 import { consultAgent, DEFAULT_WAIT_MS, requireAgentByHandle } from "../domain/consult";
 import { fileContentResponse, listFiles, requireVisibleFile, uploadFromRequest } from "../domain/files";
 import { getJobRow, jobAudience, publishApproval } from "../domain/jobs";
-import { createMemory, deleteMemory, getMemory, listMemories } from "../domain/memories";
+import { createMemory, deleteMemory, findQuote, getMemory, humanWords, listMemories } from "../domain/memories";
 import { insertMessage, messagesToDTO } from "../domain/messages";
 import { links, notify } from "../domain/notify";
 import { assertRoutineChannel, assertValidSchedule, DEFAULT_TIMEZONE, insertRoutine } from "../domain/routines";
@@ -26,6 +26,8 @@ import { searchWorkspace } from "../domain/search";
 import { addTaskComment, createTask, listTasks, requireTaskByNumber, updateTask } from "../domain/tasks";
 import { agentCanSeeChannel, agentCanSeeChannelFor, findChannelByRef } from "../domain/visibility";
 import { createPage, findPageByTitle, getPage, listTree, recordRead, updatePage } from "../domain/wiki";
+import { actionState, checkAction, connectorLabel, finishAction, getAction } from "../domain/trust";
+import { createSecretRequest, secretRequestSchema } from "../domain/secretRequests";
 import { linkSchema, subtaskSchema } from "./tasks";
 
 export const toolRoutes = new Hono<ToolEnv>();
@@ -77,6 +79,13 @@ const TOOL_LABELS: Record<NativeTool, string> = {
 };
 
 function requirePerm(t: ToolCtx, tool: NativeTool, level: "read" | "write"): void {
+  // Preparação automática: o agente lê e guarda rascunhos no drive; não mexe em mais nada.
+  if (level === "write" && t.job.mode === "prepare" && tool !== "drive") {
+    throw forbidden(
+      `Este trabalho é uma preparação automática: ${t.agent.name} só lê e rascunha, não altera ${TOOL_LABELS[tool]}. Guarde o rascunho no drive e avise na resposta.`,
+      "prepare_read_only",
+    );
+  }
   const have = t.perms[tool] ?? "none";
   const ok = level === "read" ? have === "read" || have === "write" : have === "write";
   if (ok) return;
@@ -320,9 +329,26 @@ toolRoutes.post("/memories", async (c) => {
   requirePerm(t, "memory", "write");
   const body = await readBody(
     c,
-    z.object({ scope: z.enum(["agent", "team"]), content: z.string().trim().min(1).max(5000), source: z.enum(["agent", "extraction"]).default("agent") }),
+    z.object({
+      scope: z.enum(["agent", "team"]),
+      content: z.string().trim().min(1).max(5000),
+      source: z.enum(["agent", "extraction"]).default("agent"),
+      /** Trecho literal de uma mensagem de pessoa que sustenta a memória. */
+      quote: z.string().trim().max(600).optional(),
+    }),
   );
-  const dto = await createMemory(t.db, t.wsId, t.actor, { scope: body.scope, agentId: t.agent.id, content: body.content, source: body.source });
+  // Só fica confirmada a memória sustentada pelas palavras de uma pessoa nesta conversa. O resto entra como
+  // "não confirmada": o agente a trata como provável, e ela aparece marcada para alguém confirmar ou apagar.
+  const hit = findQuote(body.quote, await humanWords(t.db, t.wsId, t.job));
+  const dto = await createMemory(t.db, t.wsId, t.actor, {
+    scope: body.scope,
+    agentId: t.agent.id,
+    content: body.content,
+    source: body.source,
+    status: hit ? "confirmed" : "tentative",
+    quote: hit ? body.quote! : null,
+    sourceMessageId: hit?.messageId ?? null,
+  });
   return c.json(dto, 201);
 });
 
@@ -337,13 +363,27 @@ toolRoutes.post("/memories/review", async (c) => {
   const body = await readBody(
     c,
     z.object({
-      add: z.array(z.object({ scope: z.enum(["agent", "team"]), content: z.string().trim().min(1).max(MEMORY_REVIEW_MAX_CHARS) })).max(MEMORY_REVIEW_MAX_ADD).default([]),
-      remove: z.array(z.string().min(1).max(64)).max(MEMORY_REVIEW_MAX_REMOVE).default([]),
+      add: z
+        .array(z.object({ scope: z.enum(["agent", "team"]), content: z.string().trim().min(1).max(MEMORY_REVIEW_MAX_CHARS), quote: z.string().trim().max(600).optional() }))
+        .max(MEMORY_REVIEW_MAX_ADD)
+        .default([]),
+      // Runners antigos mandam só o id (sem citação): nada é apagado.
+      remove: z
+        .array(z.union([z.string().min(1).max(64), z.object({ id: z.string().min(1).max(64), quote: z.string().trim().max(600).optional() })]))
+        .max(MEMORY_REVIEW_MAX_REMOVE)
+        .default([]),
       usage: z.object({ inputTokens: z.number().int().min(0).max(5_000_000), outputTokens: z.number().int().min(0).max(1_000_000) }).optional(),
     }),
   );
+  // Quem revisa é um modelo que leu a conversa. Uma mudança só vale com um trecho literal das palavras de
+  // uma pessoa nesta conversa; o hub confere a citação no banco, não no que o runner mandou.
+  const words = await humanWords(t.db, t.wsId, t.job);
   const removed: string[] = [];
-  for (const id of new Set(body.remove)) {
+  const seenRemove = new Set<string>();
+  for (const item of body.remove) {
+    const { id, quote } = typeof item === "string" ? { id: item, quote: undefined } : item;
+    if (seenRemove.has(id) || !findQuote(quote, words)) continue;
+    seenRemove.add(id);
     const row = await getMemory(t.db, t.wsId, id);
     if (!row || row.source === "user" || (row.scope === "agent" && row.agent_id !== t.agent.id)) continue;
     await deleteMemory(t.db, t.wsId, row.id);
@@ -355,9 +395,18 @@ toolRoutes.post("/memories/review", async (c) => {
   const added: string[] = [];
   for (const m of body.add) {
     const key = m.content.trim().toLowerCase();
-    if (existing.has(key)) continue;
+    const hit = findQuote(m.quote, words);
+    if (existing.has(key) || !hit) continue;
     existing.add(key);
-    await createMemory(t.db, t.wsId, t.actor, { scope: m.scope, agentId: t.agent.id, content: m.content, source: "extraction" });
+    await createMemory(t.db, t.wsId, t.actor, {
+      scope: m.scope,
+      agentId: t.agent.id,
+      content: m.content,
+      source: "extraction",
+      status: "confirmed",
+      quote: m.quote!,
+      sourceMessageId: hit.messageId,
+    });
     added.push(m.content);
   }
   // O custo da revisão entra na conta do trabalho (e, com isso, no orçamento do agente).
@@ -389,6 +438,67 @@ toolRoutes.post("/memories/review", async (c) => {
   return c.json({ added: added.length, removed: removed.length });
 });
 
+/**
+ * Procedimento aprendido: depois de um trabalho com vários passos, o runner manda o roteiro que o agente
+ * seguiu, para reutilizar da próxima vez. É um texto escrito por um modelo a partir de um trabalho que pode
+ * ter lido conteúdo externo, então: fica só com este agente, tem tamanho e quantidade limitados, aparece
+ * marcado como "aprendido" (não é instrução de ninguém e não concede permissão) e o responsável pode
+ * editar ou apagar. Um procedimento registra os passos, não a permissão: a checagem de ações continua valendo.
+ */
+toolRoutes.post("/skills/learned", async (c) => {
+  const t = await tctx(c);
+  const body = await readBody(
+    c,
+    z.object({
+      name: z.string().trim().min(3).max(80),
+      description: z.string().trim().min(1).max(300),
+      body: z.string().trim().min(20).max(LEARNED_SKILL_MAX_CHARS),
+    }),
+  );
+  if (t.agent.learn_skills === 0) throw forbidden("Este agente está com o aprendizado de procedimentos desligado.", "learning_disabled");
+  if (t.job.origin !== "user" || t.job.mode === "prepare") throw forbidden("Só trabalhos pedidos por uma pessoa geram procedimento.", "learning_not_applicable");
+  const now = Date.now();
+  const existing = await first<{ id: string }>(
+    t.db,
+    "SELECT id FROM skills WHERE workspace_id = ? AND kind = 'learned' AND agent_id = ? AND name = ? COLLATE NOCASE",
+    t.wsId,
+    t.agent.id,
+    body.name,
+  );
+  let id = existing?.id;
+  if (id) {
+    await run(t.db, "UPDATE skills SET description = ?, body = ?, source_job_id = ?, updated_at = ? WHERE workspace_id = ? AND id = ?", body.description, body.body, t.job.id, now, t.wsId, id);
+  } else {
+    id = newId();
+    await t.db.batch([
+      t.db
+        .prepare(
+          `INSERT INTO skills (id, workspace_id, name, description, body, created_by, created_at, updated_at, kind, agent_id, source_job_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'learned', ?, ?)`,
+        )
+        .bind(id, t.wsId, body.name, body.description, body.body, t.agent.owner_user_id, now, now, t.agent.id, t.job.id),
+      t.db.prepare("INSERT OR IGNORE INTO agent_skills (agent_id, skill_id) VALUES (?, ?)").bind(t.agent.id, id),
+    ]);
+    // Limite por agente: os mais antigos (sem uso recente) saem.
+    await run(
+      t.db,
+      `DELETE FROM skills WHERE workspace_id = ? AND kind = 'learned' AND agent_id = ? AND id NOT IN (
+         SELECT id FROM skills WHERE workspace_id = ? AND kind = 'learned' AND agent_id = ? ORDER BY updated_at DESC LIMIT ?)`,
+      t.wsId,
+      t.agent.id,
+      t.wsId,
+      t.agent.id,
+      LEARNED_SKILLS_PER_AGENT,
+    );
+  }
+  const summary = `Procedimento ${existing ? "atualizado" : "aprendido"}: ${body.name}`;
+  const ev = await first<{ id: number; created_at: number }>(t.db, "INSERT INTO job_events (job_id, kind, summary, created_at) VALUES (?, 'note', ?, ?) RETURNING id, created_at", t.job.id, summary, now);
+  const hub = c.get("hub");
+  await hub.rt.publish({ type: "job.event", event: toJobEventDTO({ id: ev!.id, job_id: t.job.id, kind: "note", summary, created_at: ev!.created_at }) }, await jobAudience(hub, t.job));
+  await publishAgent(hub, t.agent.id);
+  return c.json({ id, updated: !!existing }, existing ? 200 : 201);
+});
+
 toolRoutes.get("/memories", async (c) => {
   const t = await tctx(c);
   requirePerm(t, "memory", "read");
@@ -401,7 +511,9 @@ toolRoutes.get("/memories", async (c) => {
     q: c.req.query("q") || undefined,
     limit: 100,
   });
-  return c.json({ items: items.map((m) => ({ id: m.id, scope: m.scope, content: m.content, source: m.source, updatedAt: m.updatedAt })) });
+  return c.json({
+    items: items.map((m) => ({ id: m.id, scope: m.scope, content: m.content, source: m.source, updatedAt: m.updatedAt, ...(m.status === "tentative" ? { naoConfirmada: true } : {}) })),
+  });
 });
 
 toolRoutes.delete("/memories/:id", async (c) => {
@@ -650,6 +762,46 @@ toolRoutes.post("/agents/:handle/ask", async (c) => {
   return c.json({ text: result.text, status: result.status, jobId: result.jobId, agent: result.agent, ...(note ? { note } : {}) });
 });
 
+// ---------- Ações em conectores e no navegador (checagem de permissão) ----------
+// Chamadas pelo intermediário de conectores do runner (`puxibot mcp-proxy`) antes e depois de cada ferramenta.
+const actionCheckSchema = z.object({
+  connectorId: z.string().min(1).max(64),
+  tool: z.string().min(1).max(200),
+  readOnly: z.boolean(),
+  args: z.record(z.string(), z.unknown()).optional(),
+});
+
+toolRoutes.post("/actions", async (c) => {
+  const t = await tctx(c);
+  const body = await readBody(c, actionCheckSchema);
+  const isBrowser = body.connectorId === BROWSER_TOOL;
+  const level = t.perms[isBrowser ? BROWSER_TOOL : `connector:${body.connectorId}`] ?? "none";
+  const name = await connectorLabel(t.db, t.wsId, body.connectorId);
+  if (!name || level === "none") throw forbidden(`${t.agent.name} não tem acesso a este conector.`, "tool_permission_denied");
+  // "Somente leitura": só passa o que o próprio conector marca como leitura (o navegador não tem esse nível).
+  if (!body.readOnly && level !== "write") {
+    throw forbidden(`${t.agent.name} tem acesso somente leitura a ${name}; esta ferramenta pode alterar dados.`, "tool_permission_denied");
+  }
+  return c.json(await checkAction(c.get("hub"), { ...body, agent: t.agent, job: t.job, connectorName: name }));
+});
+
+async function ownAction(c: Context<ToolEnv>) {
+  const claims = c.get("job");
+  const row = await getAction(c.env.DB, claims.workspaceId, c.req.param("id")!);
+  if (!row || row.job_id !== claims.jobId) throw notFound("Ação não encontrada.");
+  return row;
+}
+
+toolRoutes.get("/actions/:id", async (c) => c.json(actionState(await ownAction(c))));
+
+toolRoutes.post("/actions/:id/result", async (c) => {
+  const row = await ownAction(c);
+  const body = await readBody(c, z.object({ ok: z.boolean(), error: z.string().max(2000).optional() }));
+  if (row.decision !== "allowed") throw badRequest("Esta ação não foi liberada.");
+  await finishAction(c.env.DB, c.get("job").workspaceId, row, body.ok, body.error);
+  return c.json({ ok: true });
+});
+
 // ---------- Aprovações (sempre permitido) ----------
 toolRoutes.post("/approvals", async (c) => {
   const t = await tctx(c);
@@ -695,6 +847,16 @@ toolRoutes.post("/approvals", async (c) => {
   return c.json(dto, 201);
 });
 
+/**
+ * Pedido de segredo: a pessoa digita numa caixa da interface e o valor vai direto para o cofre ou para o
+ * conector. O agente acompanha o estado por GET /approvals/:id e nunca recebe o valor.
+ */
+toolRoutes.post("/secret-requests", async (c) => {
+  const t = await tctx(c);
+  const body = await readBody(c, secretRequestSchema);
+  return c.json(await createSecretRequest(c.get("hub"), body, { agent: t.agent, job: t.job, principalUserId: t.principalUserId, perms: t.perms }), 201);
+});
+
 toolRoutes.get("/approvals/:id", async (c) => {
   const t = await tctx(c);
   const row = await first<ApprovalRow>(t.db, "SELECT * FROM approvals WHERE workspace_id = ? AND id = ? AND agent_id = ?", t.wsId, c.req.param("id"), t.agent.id);
@@ -704,6 +866,7 @@ toolRoutes.get("/approvals/:id", async (c) => {
 
 // ---------- Só assistente pessoal, agindo como o dono ----------
 function requireAssistant(t: ToolCtx, what: string): string {
+  if (t.job.mode === "prepare") throw forbidden(`Preparação automática não pode ${what}.`, "prepare_read_only");
   if (t.agent.is_assistant !== 1) throw forbidden(`Só o assistente pessoal pode ${what}.`, "assistant_only");
   if (t.job.requested_by_user_id && t.job.requested_by_user_id !== t.agent.owner_user_id) {
     throw forbidden(`O assistente só pode ${what} a pedido da pessoa dona dele.`, "assistant_only");

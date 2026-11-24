@@ -5,9 +5,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { setupPlanSchema } from "@puxibot/shared";
 import type { RequestOptions } from "./hubApi.js";
 
-export type Perm = { tool: "messages" | "memory" | "tasks" | "wiki" | "drive" | "agents"; level: "read" | "write" } | "always" | "assistant";
+export type Perm = { tool: "messages" | "memory" | "tasks" | "wiki" | "drive" | "agents"; level: "read" | "write" } | "always" | "assistant" | "builder";
 
 export interface ToolContext {
   channelId: string | null;
@@ -25,6 +26,11 @@ export interface ToolDef {
   /** Usado na mensagem de permissão negada: "você não tem permissão para <ação>". */
   action: string;
   perm: Perm;
+  /**
+   * O resultado traz texto escrito por outras pessoas ou vindo de fora (mensagens, wiki, arquivos):
+   * vai para o modelo dentro de um bloco de dado externo, com esta origem.
+   */
+  untrusted?: string;
   input: z.ZodRawShape;
   run(args: Record<string, unknown>, ctx: ToolContext): Promise<unknown>;
 }
@@ -97,6 +103,7 @@ export const TOOLS: ToolDef[] = [
     description: "Lê as mensagens mais recentes de um canal (mais novas por último). Sem `channel`, lê a conversa atual.",
     action: "ler mensagens",
     perm: { tool: "messages", level: "read" },
+    untrusted: "conversas do workspace",
     input: {
       channel: z.string().optional().describe("Nome ou id do canal. Padrão: a conversa deste pedido."),
       limit: z.number().int().min(1).max(100).optional().describe("Quantas mensagens (padrão 50)."),
@@ -120,6 +127,7 @@ export const TOOLS: ToolDef[] = [
     description: "Busca texto em mensagens, tarefas, páginas da wiki e arquivos do workspace.",
     action: "buscar no workspace",
     perm: { tool: "messages", level: "read" },
+    untrusted: "busca no workspace",
     input: { q: z.string().min(1).describe("Termos de busca.") },
     run: (a, ctx) => ctx.call({ method: "GET", path: "/api/tool/search", query: { q: a.q as string } }),
   },
@@ -134,8 +142,13 @@ export const TOOLS: ToolDef[] = [
     input: {
       scope: z.enum(["agent", "team"]).describe("agent = só sua; team = do time."),
       content: z.string().min(1).max(2000).describe("O que lembrar."),
+      citacao: z
+        .string()
+        .max(600)
+        .optional()
+        .describe("Trecho copiado letra por letra da mensagem da pessoa que diz isso. Sem ele (ou se o trecho não existir na conversa), a memória fica marcada como não confirmada."),
     },
-    run: (a, ctx) => ctx.call({ method: "POST", path: "/api/tool/memories", json: a }),
+    run: (a, ctx) => ctx.call({ method: "POST", path: "/api/tool/memories", json: { scope: a.scope, content: a.content, ...(a.citacao ? { quote: a.citacao } : {}) } }),
   },
   {
     name: "consultar_memoria",
@@ -143,6 +156,7 @@ export const TOOLS: ToolDef[] = [
     description: "Procura nas memórias (suas e do time). Devolve id, escopo e conteúdo.",
     action: "ler memórias",
     perm: { tool: "memory", level: "read" },
+    untrusted: "memórias",
     input: {
       q: z.string().optional().describe("Termos de busca; vazio lista as mais recentes."),
       scope: z.enum(["agent", "team"]).optional().describe("Filtra por escopo."),
@@ -165,6 +179,7 @@ export const TOOLS: ToolDef[] = [
     description: "Lista tarefas do quadro do time, com filtros opcionais.",
     action: "ver tarefas",
     perm: { tool: "tasks", level: "read" },
+    untrusted: "tarefas do time",
     input: {
       status: taskStatus.optional().describe("todo, doing, review ou done."),
       assignee: z.string().optional().describe("Handle do agente ou nome/e-mail da pessoa responsável."),
@@ -239,6 +254,7 @@ export const TOOLS: ToolDef[] = [
     description: "Lê uma página da wiki pelo id ou pelo título exato.",
     action: "ler a wiki",
     perm: { tool: "wiki", level: "read" },
+    untrusted: "wiki do time",
     input: { pagina: z.string().min(1).describe("Id ou título da página.") },
     run: (a, ctx) => ctx.call({ method: "GET", path: `/api/tool/wiki/${encodeURIComponent(a.pagina as string)}` }),
   },
@@ -274,6 +290,7 @@ export const TOOLS: ToolDef[] = [
     description: "Baixa um arquivo do drive para a sua pasta de trabalho (em downloads/). Arquivos de texto pequenos também voltam no resultado.",
     action: "baixar arquivos do drive",
     perm: { tool: "drive", level: "read" },
+    untrusted: "arquivo do drive",
     input: { id: z.string().min(1).describe("Id do arquivo (de listar_arquivos).") },
     run: async (a, ctx) => {
       const res = await ctx.raw({ method: "GET", path: `/api/tool/files/${encodeURIComponent(a.id as string)}/content` });
@@ -379,6 +396,48 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "pedir_segredo",
+    title: "Pedir senha ou token",
+    description:
+      "Pede à pessoa uma senha ou um token por uma caixa segura do Puxibot. O valor vai direto para o cofre (login de site) ou para o conector; você nunca o vê e ele não passa pela conversa. Use sempre que precisar de um segredo: nunca peça para a pessoa escrever a senha numa mensagem. Depois de guardado, use `cofre_entrar` (login de site) ou tente o conector no próximo trabalho.",
+    action: "pedir segredos",
+    perm: "always",
+    input: {
+      nome: z.string().min(1).max(120).describe("Título da caixa, ex.: 'Senha do painel da transportadora'."),
+      motivo: z.string().min(1).max(1000).describe("Para que serve e onde a pessoa acha o valor."),
+      destino: z.enum(["cofre", "conector"]).describe("cofre: login de um site, usado pelo navegador. conector: token de um conector que já existe."),
+      login: z.string().min(1).max(80).optional().describe("destino cofre: nome do login no cofre, ex.: 'Transportadora'."),
+      site: z.string().min(3).max(300).optional().describe("destino cofre: endereço do site onde a senha será usada, ex.: painel.exemplo.com."),
+      usuario: z.string().min(1).max(200).optional().describe("destino cofre: usuário ou e-mail do login, se você souber; senão a pessoa preenche."),
+      conector: z.string().min(1).max(120).optional().describe("destino conector: nome do conector."),
+      link: z.string().max(500).optional().describe("Página (https) onde a pessoa consegue o valor."),
+      esperarMinutos: z.number().min(1).max(60).optional().describe("Quanto esperar no máximo (padrão 10)."),
+    },
+    run: async (a, ctx) => {
+      let target: Record<string, unknown>;
+      if (a.destino === "cofre") {
+        if (!a.login || !a.site) throw new Error("Para o cofre, informe `login` e `site`.");
+        target = { kind: "vault", name: a.login, site: a.site, ...(a.usuario ? { username: a.usuario } : {}) };
+      } else {
+        if (!a.conector) throw new Error("Para um conector, informe `conector`.");
+        target = { kind: "connector", connector: a.conector };
+      }
+      const created = await ctx.call<{ id: string }>({
+        method: "POST",
+        path: "/api/tool/secret-requests",
+        json: { label: a.nome, reason: a.motivo, ...(a.link ? { url: a.link } : {}), target },
+      });
+      const deadline = Date.now() + ((a.esperarMinutos as number) ?? 10) * 60_000;
+      while (Date.now() < deadline) {
+        await ctx.sleep(5000);
+        const cur = await ctx.call<{ status?: string }>({ method: "GET", path: `/api/tool/approvals/${encodeURIComponent(created.id)}` });
+        if (cur.status === "approved") return { status: "guardado", note: "O valor foi guardado. Você não o recebe: use o login do cofre ou o conector." };
+        if (cur.status === "rejected") return { status: "recusado", note: "A pessoa preferiu não informar. Não peça de novo; siga sem isso e avise na resposta." };
+      }
+      return { status: "aguardando", note: "A pessoa ainda não respondeu. Avise na resposta que o pedido está na tela de Aprovações do Puxibot." };
+    },
+  },
+  {
     name: "criar_agente",
     title: "Criar agente",
     description: "Cria um agente novo no workspace em nome da sua pessoa (só para o assistente pessoal).",
@@ -409,6 +468,26 @@ export const TOOLS: ToolDef[] = [
     },
     run: (a, ctx) => ctx.call({ method: "POST", path: "/api/tool/routines", json: a }),
   },
+  // ---------- Só o agente criador ----------
+  {
+    name: "listar_catalogo_conectores",
+    title: "Listar catálogo de conectores",
+    description: "Lista os apps com conexão pronta (id, nome, para que serve, requisitos) e os conectores que o time já tem. Use antes de propor a estrutura.",
+    action: "ver o catálogo de conectores",
+    perm: "builder",
+    input: {},
+    run: (_a, ctx) => ctx.call({ method: "GET", path: "/api/tool/setup/catalog" }),
+  },
+  {
+    name: "propor_estrutura",
+    title: "Propor estrutura",
+    description:
+      "Entrega o plano completo da estrutura do time para a pessoa revisar na tela: canais, agentes, skills, rotinas, páginas da wiki, memórias e conectores necessários. Não cria nada: quem cria é a pessoa, pelo botão da tela. Chamar de novo substitui o plano anterior, então mande sempre o plano inteiro.",
+    action: "propor a estrutura do time",
+    perm: "builder",
+    input: setupPlanSchema.shape,
+    run: (a, ctx) => ctx.call({ method: "POST", path: "/api/tool/setup/plan", json: a }),
+  },
   {
     name: "reportar_progresso",
     title: "Reportar progresso",
@@ -421,9 +500,10 @@ export const TOOLS: ToolDef[] = [
 ];
 
 /** A ferramenta deve ser oferecida, dadas as permissões conhecidas do agente? */
-export function toolAllowed(t: ToolDef, perms: Record<string, string> | null, isAssistant: boolean | null): boolean {
+export function toolAllowed(t: ToolDef, perms: Record<string, string> | null, isAssistant: boolean | null, agentKind: string | null = null): boolean {
   if (t.perm === "always") return true;
   if (t.perm === "assistant") return isAssistant !== false;
+  if (t.perm === "builder") return agentKind === "builder";
   if (!perms) return true;
   // Ausente = padrão do contrato para ferramentas nativas (`write`); o hub confere de novo.
   const level = perms[t.perm.tool] ?? "write";

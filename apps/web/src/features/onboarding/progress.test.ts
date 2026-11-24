@@ -17,12 +17,14 @@ describe("progresso do onboarding", () => {
     const p = initialProgress("team");
     expect(p.current).toBe("voce");
     expect(p.done).toEqual(["uso"]);
-    expect(stepNumber(p, "voce")).toEqual({ n: 2, total: 6 });
+    expect(stepNumber(p, "voce")).toEqual({ n: 2, total: 5 });
   });
 
   it("workspace pessoal não tem o passo de convite", () => {
     expect(applicableSteps("personal")).not.toContain("convite");
-    expect(stepNumber(initialProgress("personal"), "time")).toEqual({ n: 5, total: 5 });
+    expect(stepNumber(initialProgress("personal"), "montar")).toEqual({ n: 4, total: 4 });
+    // O computador vem antes de montar o time: o agente criador precisa dele.
+    expect(applicableSteps("team").indexOf("computador")).toBeLessThan(applicableSteps("team").indexOf("montar"));
   });
 
   it("avança concluindo ou pulando e termina no último", () => {
@@ -30,19 +32,18 @@ describe("progresso do onboarding", () => {
     p = completeStep(p, "voce");
     expect(p.current).toBe("computador");
     p = skipStep(p, "computador");
-    p = completeStep(p, "negocio");
-    p = skipStep(p, "time");
+    p = skipStep(p, "montar");
     expect(p.current).toBe("convite");
     expect(p.finished).toBe(false);
     p = completeStep(p, "convite");
     expect(p.finished).toBe(true);
-    expect(p.skipped).toEqual(["computador", "time"]);
+    expect(p.skipped).toEqual(["computador", "montar"]);
   });
 
   it("retomar um passo pulado e concluí-lo tira da lista de pulados", () => {
     let p = skipAll(initialProgress("team"));
     expect(p.finished).toBe(true);
-    expect(p.skipped).toEqual(["voce", "computador", "negocio", "time", "convite"]);
+    expect(p.skipped).toEqual(["voce", "computador", "montar", "convite"]);
     p = goTo(p, "computador");
     expect(p).toMatchObject({ current: "computador", finished: false });
     p = completeStep(p, "computador");
@@ -54,8 +55,8 @@ describe("progresso do onboarding", () => {
 
   it("depois do último passo volta para algum pendente anterior", () => {
     let p = initialProgress("personal");
-    p = goTo(p, "time");
-    p = completeStep(p, "time");
+    p = goTo(p, "montar");
+    p = completeStep(p, "montar");
     expect(p.current).toBe("voce");
     expect(p.finished).toBe(false);
   });

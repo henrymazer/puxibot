@@ -17,6 +17,9 @@ export const paths = {
   drive: (ws: string) => `/w/${ws}/drive`,
   routines: (ws: string) => `/w/${ws}/rotinas`,
   onboarding: (ws: string) => `/w/${ws}/boas-vindas`,
+  /** Conversa com o agente criador e revisão do plano. */
+  setup: (ws: string) => `/w/${ws}/montar`,
+  usage: (ws: string) => `/w/${ws}/uso`,
 };
 
 /** Links de notificação: aceita caminho completo ("/w/..."), relativo ao workspace ("/c/...") ou URL absoluta. */

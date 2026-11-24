@@ -1,0 +1,11 @@
+{
+  "displayName": "Linear",
+  "categories": ["Projetos"],
+  "prompts": [
+    "Quais issues do ciclo atual estão sem responsável?",
+    "Abra uma issue para o bug que a Ana descreveu no canal #suporte."
+  ],
+  "requirements": ["Conta do Linear com acesso ao workspace."],
+  "limitations": ["O acesso segue as permissões da sua conta no Linear."],
+  "connection": { "type": "mcp", "server": "linear", "authentication": ["oauth2"] }
+}

@@ -28,6 +28,7 @@ import { useAgentProfile } from "../shell/hooks";
 import { Markdown } from "./Markdown";
 import { MessageCards } from "./MessageCards";
 import { useComposerStore } from "./Composer";
+import { ListenButton } from "./VoiceButton";
 import { useNewTask } from "../tasks/newTask";
 import { prefillFromMessage } from "../../lib/kanban";
 
@@ -321,6 +322,7 @@ export const MessageItem = memo(function MessageItem({ message: m, continuation,
           >
             <Quote className="size-4" />
           </IconButton>
+          {isAgent && m.body.trim() && <ListenButton messageId={m.id} text={m.body} />}
           <IconButton
             size="sm"
             label="Criar tarefa a partir desta mensagem"

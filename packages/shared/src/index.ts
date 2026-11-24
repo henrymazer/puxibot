@@ -5,6 +5,11 @@
  * Datas são números (ms desde epoch).
  */
 import { z } from "zod";
+import type { SetupPlanDTO } from "./setup";
+
+export * from "./catalog";
+export * from "./setup";
+export * from "./trust";
 
 // ---------- Enumerações ----------
 export const ROLES = ["owner", "admin", "member"] as const;
@@ -106,7 +111,16 @@ export interface AgentDTO {
   maxConcurrentJobs: number;
   maxPrsPerHour: number;
   status: "active" | "paused";
-  toolPerms: Record<string, ToolLevel>; // chave: NativeTool ou `connector:<id>`
+  /**
+   * Ações que mudam algo num conector ou no navegador: "ask" = só rodam quando o pedido, uma regra ou
+   * uma aprovação cobrem; "auto" = rodam sem perguntar.
+   */
+  trustMode: "ask" | "auto";
+  /** "builder" = agente criador (monta a estrutura do time a partir de uma conversa). */
+  systemKind: "builder" | null;
+  /** Guarda procedimentos aprendidos ao fim de um trabalho. */
+  learnSkills: boolean;
+  toolPerms: Record<string, ToolLevel>; // chave: NativeTool, `browser` ou `connector:<id>`
   skillIds: string[];
   /** Estado calculado para a interface. */
   activity: "idle" | "working" | "waiting_approval" | "queued_no_runner" | "error";
@@ -131,6 +145,9 @@ export interface SkillDTO {
   updatedAt: number;
   /** Quem criou (id da pessoa). Só ela ou um admin edita/apaga. */
   createdBy?: string;
+  /** "learned" = procedimento que o agente `agentId` escreveu sozinho depois de um trabalho. */
+  kind?: "manual" | "learned";
+  agentId?: string | null;
 }
 
 export interface MemoryDTO {
@@ -142,6 +159,14 @@ export interface MemoryDTO {
   createdBy: ActorRef;
   /** Agente agindo em nome desta pessoa (quando criada pela API de ferramentas). */
   onBehalfOfUserId?: string | null;
+  /**
+   * "tentative" = escrita por um agente sem um trecho conferido das palavras de uma pessoa.
+   * O agente a trata como provável, não como certa, até alguém confirmar.
+   */
+  status?: "confirmed" | "tentative";
+  /** Trecho literal da mensagem da pessoa que sustenta a memória. */
+  quote?: string | null;
+  sourceMessageId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -159,6 +184,12 @@ export interface ConnectorDTO {
   secretHeaderNames?: string[];
   secretEnvNames?: string[];
   createdAt?: number;
+  /** App do catálogo de onde veio (null = personalizado). */
+  catalogId?: string | null;
+  /** "oauth" = login no navegador; o hub guarda e renova o acesso. */
+  auth?: "static" | "oauth";
+  oauthStatus?: "pending" | "connected" | "signin_required" | null;
+  oauthClientId?: string | null;
 }
 
 export interface ChannelDTO {
@@ -256,6 +287,8 @@ export interface JobDTO {
   waitingForRunner: boolean;
   /** Tarefa que originou o job (atribuição ou menção em comentário). */
   taskId?: string | null;
+  /** "prepare" = preparação automática (só lê e rascunha). */
+  mode?: string | null;
 }
 
 export interface JobEventDTO {
@@ -275,7 +308,8 @@ export interface RoutineDTO {
   timezone: string;
   channelId: string | null;
   enabled: boolean;
-  kind: "custom" | "daily_summary";
+  /** "prepare" = preparação automática: o agente só lê e rascunha, e avisa quando vale a pena. */
+  kind: "custom" | "daily_summary" | "prepare";
   nextRunAt: number | null;
   lastRunAt: number | null;
 }
@@ -284,7 +318,7 @@ export interface ApprovalDTO {
   id: string;
   agentId: string;
   jobId: string | null;
-  kind: "job_start" | "action";
+  kind: "job_start" | "action" | "secret";
   title: string;
   details: string | null;
   approverUserId: string;
@@ -293,6 +327,102 @@ export interface ApprovalDTO {
   decidedAt: number | null;
   decisionNote: string | null;
   createdAt: number;
+  /** Aprovação de uma ação num conector ou no navegador (checagem de permissão do hub). */
+  actionId?: string | null;
+  /** Alcance da resposta: só esta vez, até o fim do trabalho, ou sempre (vira regra). */
+  scope?: "once" | "job" | "always" | null;
+  action?: { connectorName: string; tool: string; summary: string } | null;
+  /** Pedido de segredo (kind "secret"): para onde o valor digitado vai. Nunca traz o valor. */
+  secret?: SecretTargetDTO | null;
+}
+
+/** Destino de um pedido de segredo. O hub monta a partir do que existe; o texto do agente fica em title/details. */
+export type SecretTargetDTO =
+  | { target: "vault"; name: string; origin: string; username: string | null; url: string | null }
+  | { target: "connector"; connectorId: string; name: string; url: string | null };
+
+/** Uma chamada a um conector ou ao navegador, com o motivo que a liberou. */
+export interface AgentActionDTO {
+  id: string;
+  jobId: string;
+  agentId: string;
+  connectorId: string;
+  connectorName: string;
+  tool: string;
+  summary: string;
+  kind: "read" | "write";
+  decision: "allowed" | "asked" | "denied";
+  reason: string;
+  status: "pending" | "ok" | "error" | "blocked";
+  error: string | null;
+  createdAt: number;
+}
+
+export interface TrustRuleDTO {
+  id: string;
+  agentId: string;
+  /** Id do conector, ou "browser". */
+  connectorId: string;
+  /** Nome da ferramenta, ou "*". */
+  tool: string;
+  effect: "allow" | "ask" | "deny";
+  createdBy: string;
+  createdAt: number;
+}
+
+/** GET /usage: um trabalho com o que ele fez. */
+export interface UsageEntryDTO {
+  jobId: string;
+  agentId: string;
+  origin: JobDTO["origin"];
+  mode: string | null;
+  requestedByUserId: string | null;
+  routineId: string | null;
+  prompt: string;
+  status: JobStatus;
+  inputTokens: number;
+  outputTokens: number;
+  model: string | null;
+  createdAt: number;
+  finishedAt: number | null;
+  actions: AgentActionDTO[];
+}
+
+export interface UsageSummaryDTO {
+  period: string;
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Trabalho que ninguém pediu na hora: rotinas e preparação automática. */
+  backgroundTokens: number;
+  actions: { reads: number; writes: number; asked: number; denied: number };
+  byAgent: { agentId: string; runs: number; tokens: number }[];
+  /** Projeção por rotina: média de tokens das últimas execuções × execuções previstas em 30 dias. */
+  routines: { routineId: string; name: string; agentId: string; runs: number; avgTokens: number; runsPerMonth: number; projectedTokensMonth: number }[];
+}
+
+/** Conversa com um agente por Telegram ou WhatsApp. */
+export interface ChatLinkDTO {
+  provider: "telegram" | "whatsapp";
+  /** O hub tem as credenciais desse canal configuradas. */
+  available: boolean;
+  linked: boolean;
+  linkCode: string | null;
+  /** Para onde a pessoa manda o código: usuário do bot (Telegram) ou número (WhatsApp). */
+  address: string | null;
+  workspaceId: string | null;
+  agentId: string | null;
+}
+
+/** Login de site guardado no cofre (a senha nunca volta). */
+export interface VaultItemDTO {
+  id: string;
+  name: string;
+  origin: string;
+  username: string;
+  createdAt: number;
+  updatedAt: number;
+  lastUsedAt: number | null;
 }
 
 export interface TaskDTO {
@@ -478,7 +608,9 @@ export type ClientEvent =
   | { type: "file.created"; file: FileDTO }
   | { type: "approval.upserted"; approval: ApprovalDTO }
   | { type: "notification.created"; notification: NotificationDTO }
-  | { type: "runner.updated"; runner: RunnerDTO };
+  | { type: "runner.updated"; runner: RunnerDTO }
+  /** O agente criador propôs (ou atualizou) um plano; vai só para quem está conversando com ele. */
+  | { type: "setup.plan.upserted"; plan: SetupPlanDTO };
 
 /** Enviados pelo navegador no mesmo WebSocket. */
 export type ClientCommand =
@@ -508,6 +640,11 @@ export const MEMORY_REVIEW_MAX_REMOVE = 3;
 export const MEMORY_REVIEW_MAX_CHARS = 500;
 /** Por quanto tempo depois de terminar o trabalho o runner ainda pode mandar a revisão. */
 export const MEMORY_REVIEW_GRACE_MS = 3 * 60_000;
+/** Procedimento aprendido: tamanho máximo do texto e quantos cada agente guarda. */
+export const LEARNED_SKILL_MAX_CHARS = 3000;
+export const LEARNED_SKILLS_PER_AGENT = 20;
+/** Quantas ferramentas um trabalho precisa ter usado para valer a pena guardar o procedimento. */
+export const LEARNED_SKILL_MIN_TOOLS = 3;
 
 export const CHILD_JOB_EXTRA_CAPACITY = 3;
 
@@ -535,8 +672,17 @@ export interface JobAssignment {
     preferredCli: Cli | null;
     preferredModel: string | null;
     toolPerms: Record<string, ToolLevel>;
-    skills: { name: string; description: string; body: string }[];
+    /** `learned` = procedimento que o próprio agente escreveu depois de um trabalho. */
+    skills: { name: string; description: string; body: string; learned?: boolean }[];
+    /** Guardar procedimentos aprendidos ao fim do trabalho. Opcional: hubs antigos não enviam. */
+    learnSkills?: boolean;
+    /** "builder" = agente criador. */
+    systemKind?: "builder" | null;
   };
+  /** "prepare" = preparação automática: só lê e rascunha. */
+  mode?: string | null;
+  /** O pedido chegou por um canal de conversa externo: links privados não vão na resposta. */
+  replyVia?: "telegram" | "whatsapp" | null;
   origin: JobDTO["origin"];
   /** Job pai (consulta entre agentes / tarefa criada por agente). Opcional: hubs antigos não enviam. */
   parentJobId?: string | null;
@@ -550,7 +696,7 @@ export interface JobAssignment {
    * Memórias do agente e do time. `id` e `removable` servem à revisão automática de memória:
    * só as que não foram escritas por uma pessoa podem ser apagadas por ela.
    */
-  memories: { scope: "agent" | "team"; content: string; id?: string; removable?: boolean }[];
+  memories: { scope: "agent" | "team"; content: string; id?: string; removable?: boolean; tentative?: boolean }[];
   teammates: { handle: string; name: string; role: string | null }[];
   /** Conectores liberados para este agente, com segredos já decifrados. */
   connectors: {
@@ -564,6 +710,11 @@ export interface JobAssignment {
     env: Record<string, string>;
     level: ToolLevel;
   }[];
+  /**
+   * Logins do cofre que este trabalho pode usar no navegador (só nomes e sites; a senha fica no hub
+   * até o intermediário pedir). Vazio quando o agente não tem navegador ou o runner não é do dono.
+   */
+  vault?: { name: string; origin: string }[];
   /** Chave para retomar a sessão da CLI: mesmo agente + mesmo canal/thread. */
   sessionKey: string;
   timeoutMs: number;
@@ -596,7 +747,15 @@ export type RunnerToHub =
       outputTokens: number;
       model: string | null;
     }
-  | { type: "job.failed"; jobId: string; errorCode: JobErrorCode; error: string };
+  | { type: "job.failed"; jobId: string; errorCode: JobErrorCode; error: string }
+  /**
+   * WhatsApp ligado por QR code neste computador: a pessoa dona do runner escreveu para o agente.
+   * O runner só repassa mensagens da própria dona; o hub confere o agente e o acesso.
+   */
+  | { type: "chat.inbound"; provider: "whatsapp"; agent: string; text: string };
+
+/** Marca em `jobs.reply_to`: a resposta volta pelo runner da pessoa (WhatsApp por QR code), não pela API oficial. */
+export const CHAT_REPLY_RUNNER_PREFIX = "runner:";
 
 /** `POST /api/runner/pair/start` → resposta. */
 export interface RunnerPairStartResponse {
@@ -619,6 +778,8 @@ export type HubToRunner =
   | { type: "pong" }
   | { type: "job.assign"; assignment: JobAssignment }
   | { type: "job.cancel"; jobId: string }
+  /** Texto para o runner entregar à dona pelo WhatsApp ligado por QR code. */
+  | { type: "chat.send"; provider: "whatsapp"; text: string }
   | { type: "error"; code: string; message: string };
 
 // ---------- Validação de entradas mais usadas ----------

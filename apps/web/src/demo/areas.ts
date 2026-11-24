@@ -6,6 +6,7 @@ import { registerDrive } from "./areas/drive";
 import { registerAutomation } from "./areas/automation";
 import { registerMisc } from "./areas/misc";
 import { registerNotify } from "./areas/notify";
+import { registerTrust } from "./areas/trust";
 
 export function registerAreaRoutes(ctx: DemoContext): void {
   registerTasks(ctx);
@@ -14,4 +15,5 @@ export function registerAreaRoutes(ctx: DemoContext): void {
   registerAutomation(ctx);
   registerMisc(ctx);
   registerNotify(ctx);
+  registerTrust(ctx);
 }

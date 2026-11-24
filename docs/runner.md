@@ -147,6 +147,7 @@ Um conector (servidor MCP cadastrado em **Configurações › Conectores**) só 
 | `puxibot status` | Mostra hub, workspace, isolamento padrão e se o runner está rodando. |
 | `puxibot logout` | Remove este runner do hub e apaga o token local. |
 | `puxibot doctor` | Verifica CLIs, logins e isolamento. `--json` para saída em JSON. |
+| `puxibot whatsapp conectar --agente <handle>` | Vincula o seu WhatsApp por QR code para conversar com um agente (uso pessoal, cliente não oficial). Veja [conexoes.md](conexoes.md#whatsapp-pelo-seu-computador-qr-code). `desconectar` e `status` completam. |
 | `puxibot service` | Imprime (sem instalar) uma unidade do systemd e um plist do launchd para manter o runner ligado. |
 | `puxibot mcp` | Servidor MCP das ferramentas do Puxibot. Você não roda isto: a CLI de IA o inicia durante cada trabalho. |
 
@@ -235,18 +236,50 @@ Por isso, o que precisa durar tem de virar memória gravada. Isso acontece de do
 - o agente grava ou apaga por conta própria, com as ferramentas `lembrar` e `esquecer`;
 - **revisão automática**: depois de entregar cada resposta, o runner faz uma segunda chamada à CLI, curta e sem ferramentas, que lê o pedido, a resposta e as memórias atuais e decide o que guardar e o que já não vale (ficou errado, foi substituído, é repetição ou trata de algo que acabou).
 
-Limites da revisão automática, aplicados pelo hub:
+**Memória só nasce do que uma pessoa disse.** Cada memória nova, e cada remoção, precisa de um trecho literal de uma mensagem de pessoa naquela conversa. O hub confere o trecho no próprio banco:
+
+- na revisão automática, o que vem sem citação conferida é descartado;
+- com a ferramenta `lembrar`, o que vem sem citação conferida entra como **não confirmada**: o agente a trata como provável, e ela aparece marcada no perfil para alguém confirmar ou apagar.
+
+Assim, um texto malicioso numa página ou num e-mail que o agente leu não consegue plantar uma memória confirmada nem apagar uma existente.
+
+Outros limites da revisão automática, aplicados pelo hub:
 
 - no máximo 3 memórias novas e 3 apagadas por trabalho, cada uma com até 500 caracteres;
 - nunca apaga uma memória escrita por uma pessoa na interface, só as que vieram de agentes ou de revisões anteriores;
 - só roda se o agente tem permissão de escrita em memória;
-- o que entrou e o que saiu fica registrado no próprio trabalho ("Memória revisada"), e as memórias criadas assim aparecem como "extraída de conversa" no perfil do agente.
+- o que entrou e o que saiu fica registrado no próprio trabalho ("Memória revisada"), com a mensagem de onde veio.
+
+**Procedimentos aprendidos.** Na mesma chamada, depois de um trabalho pedido por uma pessoa e com pelo menos três usos de ferramenta, a revisão pode escrever o roteiro que o agente seguiu, para ele reutilizar. O roteiro fica só com aquele agente (no máximo 20, com até 3 mil caracteres cada), aparece marcado como "aprendido" e é recusado se trouxer frases que tentem virar permissão. Desliga-se por agente, no perfil, ou neste computador com `"skills": { "learn": false }`.
 
 Custo: com o Claude Code, cerca de mil tokens de entrada por trabalho, no modelo `haiku`, somados ao trabalho e ao orçamento do agente. A resposta não espera pela revisão.
 
 Hoje só o adaptador do Claude Code faz a revisão; com Codex e Gemini CLI ela não roda. Para desligar neste computador, ponha `"memory": { "auto": false }` no `config.json`; `"model"` troca o modelo usado.
 
-A revisão lê conteúdo que pode ser malicioso (uma mensagem colada, uma página da web resumida pelo agente). Ela não tem ferramentas e só consegue propor mudanças dentro dos limites acima, mas um texto feito para isso pode fazê-la guardar uma informação falsa. Confira as memórias de tempos em tempos no perfil de cada agente.
+## Conectores e checagem de ações
+
+Todo conector liberado para um agente chega à CLI por um intermediário do próprio runner (`puxibot mcp-proxy`). Antes de cada chamada ele pergunta ao hub se a ação pode rodar, registra o resultado e devolve a resposta do conector marcada como dado externo. Detalhes e limites em [confianca.md](confianca.md).
+
+- Uma ação que precisa de aprovação fica esperando por até 10 minutos. `"approvals": { "waitSeconds": 300 }` no `config.json` muda esse tempo.
+- Se o hub não responder, a chamada não é executada.
+- O segredo do conector vai para o intermediário numa variável de ambiente, dentro do isolamento. Um agente que use o terminal de propósito para chamar o serviço direto não é impedido.
+
+## Navegador
+
+Um agente pode usar um navegador próprio quando duas chaves estão ligadas: o responsável liga o navegador no perfil do agente, e você liga neste computador:
+
+```json
+{ "browser": { "enabled": true } }
+```
+
+O runner inicia o servidor MCP do Playwright (`npx -y @playwright/mcp@latest --headless --isolated`) atrás do mesmo intermediário dos conectores. `"command"` e `"args"` trocam o comando. Instale o navegador antes, uma vez: `npx playwright install chromium`.
+
+- Navegar e olhar rodam direto; clicar, digitar e enviar formulários passam pela checagem de ações.
+- Senhas vêm do cofre (Configurações › Cofre). O agente nunca as vê: o intermediário busca a senha no hub e a digita, só em página do mesmo site e só quando o trabalho roda no computador da dona do login.
+- No modo `sandbox`, o runner libera para leitura a pasta de navegadores do Playwright (`~/.cache/ms-playwright`) e põe o cache do `npx` na pasta do agente.
+- No modo `container` o navegador fica desligado, a não ser que você defina `browser.command` com um comando que exista na imagem.
+
+Testado com um Chromium de verdade numa página local, fora do isolamento e sem uma CLI de IA no comando. Dentro do `sandbox` e num site real ainda não foi testado: trate como experimental.
 
 ## Manter ligado
 

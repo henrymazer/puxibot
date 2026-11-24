@@ -16,6 +16,7 @@ import type {
   NotificationDTO,
   RunnerDTO,
   SectorDTO,
+  SetupPlanDTO,
   TaskDTO,
   WorkspaceDTO,
 } from "@puxibot/shared";
@@ -67,6 +68,8 @@ export interface DataState {
   /** Contador de mudanças da wiki: total e por página (`wiki.changed`). */
   wikiVersion: number;
   wikiPageVersions: Record<string, number>;
+  /** Plano mais recente do agente criador para esta pessoa (`setup.plan.upserted`). */
+  setupPlan: SetupPlanDTO | null;
 }
 
 export const TYPING_TTL_MS = 6000;
@@ -100,6 +103,7 @@ export function emptyData(): DataState {
     filesLoaded: false,
     wikiVersion: 0,
     wikiPageVersions: {},
+    setupPlan: null,
   };
 }
 
@@ -343,6 +347,8 @@ export function applyEvent(state: DataState, event: ClientEvent, now: number): D
     case "file.created":
       if (!event.file.inDrive) return state;
       return { ...state, files: { ...state.files, [event.file.id]: event.file } };
+    case "setup.plan.upserted":
+      return { ...state, setupPlan: event.plan };
     default: {
       const _exhaustive: never = event;
       void _exhaustive;

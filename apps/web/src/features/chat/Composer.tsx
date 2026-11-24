@@ -13,6 +13,8 @@ import { memberHandle } from "../../lib/handles";
 import { typingActors } from "../../realtime/reducer";
 import { formatBytes } from "../../lib/format";
 import { cn } from "../../lib/cn";
+import { VoiceButton } from "./VoiceButton";
+import { appendDictation } from "./voice";
 
 /** Citações e rascunhos por campo de mensagem ("main:<canal>" ou "thread:<raiz>"). */
 interface ComposerStore {
@@ -332,6 +334,12 @@ export function Composer({
             onPaste={onPaste}
             onBlur={() => setTimeout(() => setMention(null), 150)}
             className="tb-scroll max-h-60 min-h-10 flex-1 resize-none bg-transparent px-1.5 py-2 leading-normal outline-none placeholder:text-subtle"
+          />
+          {/* key: trocar de conversa encerra o ditado em vez de jogar o texto no rascunho errado. */}
+          <VoiceButton
+            key={key}
+            ws={ws}
+            onText={(text) => setDraft(key, appendDictation(useComposerStore.getState().drafts[key] ?? "", text))}
           />
           <button
             type="button"

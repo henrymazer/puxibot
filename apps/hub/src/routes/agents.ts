@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import { CLIS, createAgentSchema, currentPeriod, handleSchema, NATIVE_TOOLS, type JobDTO, type JobEventDTO } from "@puxibot/shared";
+import { BROWSER_TOOL, CLIS, createAgentSchema, currentPeriod, handleSchema, NATIVE_TOOLS, type JobDTO, type JobEventDTO } from "@puxibot/shared";
 import { all, first, placeholders, stmt } from "../lib/db";
 import { badRequest, forbidden, HttpError, notFound } from "../lib/errors";
 import { readBody } from "../lib/validate";
@@ -80,6 +80,8 @@ const patchAgentSchema = z.object({
   ownerUserId: z.string().optional(),
   budgetTokensMonth: z.number().int().min(0).nullable().optional(),
   budgetRunsMonth: z.number().int().min(0).nullable().optional(),
+  trustMode: z.enum(["ask", "auto"]).optional(),
+  learnSkills: z.boolean().optional(),
 });
 
 /** Colunas simples: campo do PATCH → coluna. Booleanos convertidos para 0/1. */
@@ -104,6 +106,8 @@ const SIMPLE_COLUMNS = {
   ownerUserId: "owner_user_id",
   budgetTokensMonth: "budget_tokens_month",
   budgetRunsMonth: "budget_runs_month",
+  trustMode: "trust_mode",
+  learnSkills: "learn_skills",
 } as const;
 
 agentRoutes.patch("/agents/:id", async (c) => {
@@ -190,6 +194,12 @@ agentRoutes.patch("/agents/:id", async (c) => {
         );
         if (!connector) throw notFound("Conector não encontrado.");
         if (connector.owner_user_id !== userId) throw forbidden("Só quem conectou pode conceder acesso a este conector.", "connector_owner_required");
+      } else if (tool === BROWSER_TOOL) {
+        // O navegador roda no computador do responsável: só ele liga (admins podem desligar).
+        if (level !== "none" && agent.owner_user_id !== userId) {
+          throw forbidden("Só o responsável pelo agente liga o navegador: ele roda no computador dessa pessoa.", "owner_required");
+        }
+        if (level === "read") throw badRequest("O navegador não tem nível somente leitura: use ligado ou desligado.");
       } else if (!(NATIVE_TOOLS as readonly string[]).includes(tool)) {
         throw badRequest(`Ferramenta desconhecida: ${tool}`);
       }

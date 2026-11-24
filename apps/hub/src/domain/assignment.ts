@@ -1,4 +1,4 @@
-import type { JobAssignment, JobContextMessage, ToolLevel } from "@puxibot/shared";
+import { BROWSER_TOOL, type JobAssignment, type JobContextMessage, type ToolLevel } from "@puxibot/shared";
 import { JOB_CONTEXT_MESSAGES, JOB_TIMEOUT_MS, type AppEnv } from "../env";
 import { all, first, parseJson } from "../lib/db";
 import { decryptJson } from "../lib/crypto";
@@ -6,18 +6,10 @@ import { issueJobToken } from "../lib/jobToken";
 import { JOB_LEASE_MS } from "@puxibot/shared";
 import { requireAgentRow, toolPerms } from "./agents";
 import { getChannel } from "./channels";
-import type { JobRow, MessageRow } from "./rows";
+import { freshAccessToken } from "./connectorOauth";
+import { usableVaultItems } from "../routes/extras";
+import type { ConnectorRow, JobRow, MessageRow } from "./rows";
 
-interface ConnectorRow {
-  id: string;
-  name: string;
-  transport: "http" | "stdio";
-  url: string | null;
-  command: string | null;
-  args_json: string;
-  secrets_enc: string | null;
-  owner_user_id: string;
-}
 
 /** Chave para o runner retomar a sessão da CLI: mesmo agente + mesmo canal/thread. */
 export function sessionKey(job: Pick<JobRow, "agent_id" | "channel_id" | "thread_root_id">): string {
@@ -35,16 +27,16 @@ export async function buildAssignment(env: AppEnv, job: JobRow, hubUrl: string):
   ]);
 
   const [skills, memories, teammates, requester, channel] = await Promise.all([
-    all<{ name: string; description: string; body: string }>(
+    all<{ name: string; description: string; body: string; kind: string | null }>(
       db,
-      `SELECT s.name, s.description, s.body FROM skills s JOIN agent_skills x ON x.skill_id = s.id
+      `SELECT s.name, s.description, s.body, s.kind FROM skills s JOIN agent_skills x ON x.skill_id = s.id
        WHERE s.workspace_id = ? AND x.agent_id = ? ORDER BY s.name`,
       wsId,
       job.agent_id,
     ),
-    all<{ scope: "agent" | "team"; content: string; id: string; source: string }>(
+    all<{ scope: "agent" | "team"; content: string; id: string; source: string; status: string | null }>(
       db,
-      `SELECT scope, content, id, source FROM memories
+      `SELECT scope, content, id, source, status FROM memories
        WHERE workspace_id = ? AND (scope = 'team' OR (scope = 'agent' AND agent_id = ?))
        ORDER BY updated_at DESC LIMIT 200`,
       wsId,
@@ -81,6 +73,13 @@ export async function buildAssignment(env: AppEnv, job: JobRow, hubUrl: string):
         console.error(JSON.stringify({ msg: "connector secrets decrypt failed", connectorId: row.id, error: String(err) }));
       }
     }
+    const headers = { ...(secrets.headers ?? {}) };
+    if (row.auth === "oauth") {
+      // Login pelo navegador: o runner recebe só um token de acesso recém-conferido; a renovação fica no hub.
+      const token = await freshAccessToken(env, row);
+      if (!token) continue; // sem login válido: o agente trabalha sem este conector
+      headers.Authorization = `Bearer ${token}`;
+    }
     connectors.push({
       id: row.id,
       name: row.name,
@@ -88,11 +87,19 @@ export async function buildAssignment(env: AppEnv, job: JobRow, hubUrl: string):
       url: row.url,
       command: row.command,
       args: parseJson<string[]>(row.args_json, []),
-      headers: secrets.headers ?? {},
+      headers,
       env: secrets.env ?? {},
       level: level as ToolLevel,
     });
   }
+
+  // Logins do cofre que o navegador pode usar neste trabalho: só nomes e sites.
+  const vault =
+    (perms[BROWSER_TOOL] ?? "none") === "none"
+      ? []
+      : (
+          await usableVaultItems(db, wsId, job, agent)
+        ).map((i) => ({ name: i.name, origin: i.origin }));
 
   // Canal só de humanos nunca vai como contexto para agente (mesmo que tenha virado humansOnly depois do pedido).
   const context = channel && channel.humans_only !== 1 ? await contextMessages(db, wsId, job) : [];
@@ -119,8 +126,12 @@ export async function buildAssignment(env: AppEnv, job: JobRow, hubUrl: string):
       preferredCli: agent.preferred_cli,
       preferredModel: agent.preferred_model,
       toolPerms: perms,
-      skills,
+      skills: skills.map((s) => ({ name: s.name, description: s.description, body: s.body, ...(s.kind === "learned" ? { learned: true } : {}) })),
+      learnSkills: agent.learn_skills !== 0,
+      systemKind: agent.system_kind === "builder" ? "builder" : null,
     },
+    mode: job.mode ?? null,
+    replyVia: job.reply_via ?? null,
     origin: job.origin,
     parentJobId: job.parent_job_id,
     requestedBy: requester ? { userId: requester.id, name: requester.name } : null,
@@ -129,9 +140,16 @@ export async function buildAssignment(env: AppEnv, job: JobRow, hubUrl: string):
     prompt: job.prompt,
     context,
     // A revisão automática só apaga o que não foi escrito por uma pessoa.
-    memories: memories.map((m) => ({ scope: m.scope, content: m.content, id: m.id, removable: m.source !== "user" })),
+    memories: memories.map((m) => ({
+      scope: m.scope,
+      content: m.content,
+      id: m.id,
+      removable: m.source !== "user",
+      ...(m.status === "tentative" ? { tentative: true } : {}),
+    })),
     teammates,
     connectors,
+    vault,
     sessionKey: sessionKey(job),
     timeoutMs: JOB_TIMEOUT_MS,
   };

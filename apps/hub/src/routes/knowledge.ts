@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
+import { CATALOG, CONNECTOR_AUTH_METHODS, catalogApp } from "@puxibot/shared";
 import { all, first, newId, run } from "../lib/db";
 import { badRequest, forbidden, notFound } from "../lib/errors";
 import { decryptJson, encryptJson } from "../lib/crypto";
@@ -8,7 +9,9 @@ import { isAdmin } from "../http/auth";
 import type { WsEnv } from "../http/types";
 import { userActor } from "../domain/actor";
 import { publishAgent, requireAgentRow } from "../domain/agents";
-import { createMemory, deleteMemory, getMemory, listMemories, updateMemory } from "../domain/memories";
+import { assertPublicHttps, beginOAuth, oauthCallbackUrl } from "../domain/connectorOauth";
+import { grantConnector } from "../domain/setup";
+import { confirmMemory, createMemory, deleteMemory, getMemory, listMemories, updateMemory } from "../domain/memories";
 import { toConnectorDTO, toSkillDTO, type AgentRow, type ConnectorRow, type SkillRow } from "../domain/rows";
 
 /** Memórias (individual e do time), skills e conectores. */
@@ -59,6 +62,12 @@ knowledgeRoutes.patch("/agents/:id/memories/:mid", async (c) => {
   return c.json(await updateMemory(c.env.DB, c.get("wsId"), row, content));
 });
 
+// Confirma uma memória que um agente gravou sem citação conferida.
+knowledgeRoutes.post("/agents/:id/memories/:mid/confirm", async (c) => {
+  const agent = await agentForMemory(c, true);
+  return c.json(await confirmMemory(c.env.DB, c.get("wsId"), await requireAgentMemory(c, agent)));
+});
+
 knowledgeRoutes.delete("/agents/:id/memories/:mid", async (c) => {
   const agent = await agentForMemory(c, true);
   const row = await requireAgentMemory(c, agent);
@@ -93,6 +102,8 @@ knowledgeRoutes.patch("/memories/:mid", async (c) => {
   const { content } = await readBody(c, contentSchema);
   return c.json(await updateMemory(c.env.DB, c.get("wsId"), row, content));
 });
+
+knowledgeRoutes.post("/memories/:mid/confirm", async (c) => c.json(await confirmMemory(c.env.DB, c.get("wsId"), await requireTeamMemory(c))));
 
 knowledgeRoutes.delete("/memories/:mid", async (c) => {
   const row = await requireTeamMemory(c);
@@ -190,6 +201,23 @@ const connectorSchema = z.object({
   args: z.array(z.string().max(2000)).max(50).default([]),
   headers: secretMap.optional(),
   env: secretMap.optional(),
+  /** "oauth" = login pelo navegador (só conector http com endereço público). */
+  auth: z.enum(["static", "oauth"]).optional(),
+  oauthClientId: z.string().trim().max(300).nullable().optional(),
+  oauthScope: z.string().trim().max(500).nullable().optional(),
+});
+
+/** Conexão a partir de um app do catálogo: o endereço vem da receita, nunca de quem pede. */
+const catalogConnectSchema = z.object({
+  catalogId: z.string().min(1).max(40),
+  name: z.string().trim().min(1).max(80).optional(),
+  method: z.enum(CONNECTOR_AUTH_METHODS),
+  /** Para `bearer` e `x-api-key`. */
+  token: z.string().min(1).max(10_000).optional(),
+  /** Para `oauth2`, quando o app exige um cliente pré-registrado. */
+  clientId: z.string().trim().min(1).max(300).optional(),
+  /** Agentes que recebem acesso assim que o conector for criado (os que quem conecta administra). */
+  grantAgentIds: z.array(z.string()).max(20).default([]),
 });
 type Secrets = { headers?: Record<string, string>; env?: Record<string, string> };
 
@@ -217,6 +245,102 @@ function validateTransport(t: "http" | "stdio", url: string | null | undefined, 
   if (t === "stdio" && !command) throw badRequest("Conector stdio precisa de command.");
 }
 
+function assertOAuthTarget(transport: string, url: string | null | undefined) {
+  if (transport !== "http" || !url) throw badRequest("Login pelo navegador só funciona em conector http.");
+  assertPublicHttps(url);
+}
+
+/** Só agentes que a pessoa administra recebem acesso junto com a criação do conector. */
+async function manageableAgents(c: Context<WsEnv>, ids: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const id of new Set(ids)) {
+    const agent = await requireAgentRow(c.env.DB, c.get("wsId"), id);
+    if (!canManageAgent(c, agent)) throw forbidden(`Você não administra ${agent.name}; peça ao responsável para liberar o conector para ele.`);
+    out.push(agent.id);
+  }
+  return out;
+}
+
+knowledgeRoutes.get("/connectors/catalog", (c) => c.json({ items: CATALOG, callbackUrl: oauthCallbackUrl(c.env, new URL(c.req.url).origin) }));
+
+knowledgeRoutes.post("/connectors/from-catalog", async (c) => {
+  const body = await readBody(c, catalogConnectSchema);
+  const app = catalogApp(body.catalogId);
+  if (!app) throw notFound("App não encontrado no catálogo.");
+  if (!app.authentication.includes(body.method)) throw badRequest(`${app.displayName} não aceita essa forma de conexão.`);
+  const grant = await manageableAgents(c, body.grantAgentIds);
+  const oauth = body.method === "oauth2";
+  let secrets: Secrets = {};
+  if (!oauth) {
+    if (!body.token?.trim()) throw badRequest("Informe o token.");
+    const token = body.token.trim();
+    secrets = { headers: body.method === "bearer" ? { Authorization: `Bearer ${token.replace(/^Bearer\s+/i, "")}` } : { [app.apiKeyHeader]: token } };
+  } else if (app.clientIdRequired && !body.clientId) {
+    throw badRequest(`${app.displayName} exige o id do seu app para o login pelo navegador.`);
+  }
+  const row: ConnectorRow = {
+    id: newId(),
+    workspace_id: c.get("wsId"),
+    name: body.name ?? app.displayName,
+    transport: "http",
+    url: app.url,
+    command: null,
+    args_json: "[]",
+    secrets_enc: oauth ? null : await encryptJson(c.env.SECRETS_KEY, secrets),
+    owner_user_id: c.get("userId"),
+    created_at: Date.now(),
+    catalog_id: app.id,
+    auth: oauth ? "oauth" : "static",
+    oauth_enc: null,
+    oauth_status: oauth ? "pending" : null,
+    oauth_client_id: oauth ? (body.clientId ?? null) : null,
+    oauth_scope: oauth && app.scopes.length ? app.scopes.join(" ") : null,
+  };
+  await insertConnector(c.env.DB, row);
+  if (grant.length) await grantConnector(c.get("hub"), row.id, grant);
+  return c.json(await connectorDTO(c, row), 201);
+});
+
+async function insertConnector(db: D1Database, row: ConnectorRow): Promise<void> {
+  await run(
+    db,
+    `INSERT INTO connectors (id, workspace_id, name, transport, url, command, args_json, secrets_enc, owner_user_id, created_at,
+       catalog_id, auth, oauth_enc, oauth_status, oauth_client_id, oauth_scope)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    row.id,
+    row.workspace_id,
+    row.name,
+    row.transport,
+    row.url,
+    row.command,
+    row.args_json,
+    row.secrets_enc,
+    row.owner_user_id,
+    row.created_at,
+    row.catalog_id ?? null,
+    row.auth ?? "static",
+    row.oauth_enc ?? null,
+    row.oauth_status ?? null,
+    row.oauth_client_id ?? null,
+    row.oauth_scope ?? null,
+  );
+}
+
+/** Começa o login pelo navegador. A resposta traz o endereço da tela de consentimento do serviço. */
+knowledgeRoutes.post("/connectors/:id/oauth/start", async (c) => {
+  const row = await requireConnector(c);
+  return c.json(await beginOAuth(c.env, row, c.get("userId"), new URL(c.req.url).origin));
+});
+
+/** Libera o conector para agentes que a pessoa administra (usado depois de conectar um app do plano). */
+knowledgeRoutes.post("/connectors/:id/grant", async (c) => {
+  const row = await requireConnector(c);
+  if (row.owner_user_id !== c.get("userId")) throw forbidden("Só quem conectou pode conceder acesso a este conector.", "connector_owner_required");
+  const { agentIds } = await readBody(c, z.object({ agentIds: z.array(z.string()).min(1).max(20) }));
+  await grantConnector(c.get("hub"), row.id, await manageableAgents(c, agentIds));
+  return c.json({ ok: true });
+});
+
 knowledgeRoutes.get("/connectors", async (c) => {
   const rows = await all<ConnectorRow>(c.env.DB, "SELECT * FROM connectors WHERE workspace_id = ? ORDER BY name COLLATE NOCASE", c.get("wsId"));
   return c.json({ items: await Promise.all(rows.map((r) => connectorDTO(c, r))) });
@@ -228,6 +352,8 @@ knowledgeRoutes.post("/connectors", async (c) => {
   const secrets: Secrets = {};
   if (body.headers && Object.keys(body.headers).length) secrets.headers = body.headers;
   if (body.env && Object.keys(body.env).length) secrets.env = body.env;
+  const oauth = body.auth === "oauth";
+  if (oauth) assertOAuthTarget(body.transport, body.url);
   const row: ConnectorRow = {
     id: newId(),
     workspace_id: c.get("wsId"),
@@ -239,22 +365,14 @@ knowledgeRoutes.post("/connectors", async (c) => {
     secrets_enc: Object.keys(secrets).length ? await encryptJson(c.env.SECRETS_KEY, secrets) : null,
     owner_user_id: c.get("userId"),
     created_at: Date.now(),
+    catalog_id: null,
+    auth: oauth ? "oauth" : "static",
+    oauth_enc: null,
+    oauth_status: oauth ? "pending" : null,
+    oauth_client_id: oauth ? (body.oauthClientId ?? null) : null,
+    oauth_scope: oauth ? (body.oauthScope ?? null) : null,
   };
-  await run(
-    c.env.DB,
-    `INSERT INTO connectors (id, workspace_id, name, transport, url, command, args_json, secrets_enc, owner_user_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    row.id,
-    row.workspace_id,
-    row.name,
-    row.transport,
-    row.url,
-    row.command,
-    row.args_json,
-    row.secrets_enc,
-    row.owner_user_id,
-    row.created_at,
-  );
+  await insertConnector(c.env.DB, row);
   return c.json(await connectorDTO(c, row), 201);
 });
 
@@ -274,6 +392,24 @@ knowledgeRoutes.patch("/connectors/:id", async (c) => {
     args_json: body.args !== undefined ? JSON.stringify(body.args) : row.args_json,
   };
   validateTransport(transport, next.url, next.command);
+  // Receita do catálogo: o endereço é o da receita. Mudar o endereço de um conector com login guardado
+  // mandaria o acesso de um serviço para outro; nesse caso o login é descartado.
+  if (row.catalog_id && (next.url !== row.url || next.transport !== row.transport)) throw badRequest("O endereço de um app do catálogo não pode ser mudado; remova e conecte de novo.");
+  if (body.auth !== undefined) next.auth = body.auth;
+  if (body.oauthClientId !== undefined) next.oauth_client_id = body.oauthClientId;
+  if (body.oauthScope !== undefined) next.oauth_scope = body.oauthScope;
+  if (next.auth === "oauth") {
+    assertOAuthTarget(next.transport, next.url);
+    if (next.url !== row.url || next.oauth_client_id !== row.oauth_client_id || row.auth !== "oauth") {
+      next.oauth_enc = null;
+      next.oauth_status = "pending";
+    }
+  } else {
+    next.oauth_enc = null;
+    next.oauth_status = null;
+    next.oauth_client_id = null;
+    next.oauth_scope = null;
+  }
   if (body.headers !== undefined || body.env !== undefined) {
     // Substitui só o grupo enviado; o outro grupo é mantido.
     let current: Secrets = {};
@@ -286,13 +422,19 @@ knowledgeRoutes.patch("/connectors/:id", async (c) => {
   }
   await run(
     c.env.DB,
-    "UPDATE connectors SET name = ?, transport = ?, url = ?, command = ?, args_json = ?, secrets_enc = ? WHERE workspace_id = ? AND id = ?",
+    `UPDATE connectors SET name = ?, transport = ?, url = ?, command = ?, args_json = ?, secrets_enc = ?,
+       auth = ?, oauth_enc = ?, oauth_status = ?, oauth_client_id = ?, oauth_scope = ? WHERE workspace_id = ? AND id = ?`,
     next.name,
     next.transport,
     next.url,
     next.command,
     next.args_json,
     next.secrets_enc,
+    next.auth ?? "static",
+    next.oauth_enc ?? null,
+    next.oauth_status ?? null,
+    next.oauth_client_id ?? null,
+    next.oauth_scope ?? null,
     c.get("wsId"),
     row.id,
   );

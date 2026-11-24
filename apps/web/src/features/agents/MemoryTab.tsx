@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { Brain, Pencil, Plus, Trash2 } from "lucide-react";
-import type { AgentDTO, MemoryDTO } from "@puxibot/shared";
+import { Brain, Check, ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
+import type { AgentDTO, MemoryDTO, SkillDTO } from "@puxibot/shared";
 import { api, ApiClientError, errorMessage } from "../../api";
 import { useWorkspace } from "../../store/workspace";
 import { actorName, canEditAgent } from "../../lib/actors";
 import { formatRelative } from "../../lib/format";
-import { Badge, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, InlineError, LoadingState, LockedNote, Textarea } from "../../components/ui";
+import { Badge, Button, ConfirmDialog, EmptyState, ErrorState, IconButton, InlineError, LoadingState, LockedNote, Textarea, Toggle } from "../../components/ui";
 import { toast } from "../../components/toast";
 import { useWsId } from "../shell/hooks";
+import { cn } from "../../lib/cn";
+import { useSaveAgent } from "./shared";
 
 const SOURCE_LABEL: Record<MemoryDTO["source"], string> = {
   agent: "anotada pelo agente",
@@ -33,6 +35,7 @@ export function MemoryTab({ agent }: { agent: AgentDTO }) {
         canEdit={!!me}
         lockedReason=""
       />
+      <LearnedSkills agent={agent} canEdit={canEditAgent(agent, me)} />
     </div>
   );
 }
@@ -95,6 +98,13 @@ function MemoryList({
       setItems((l) => [m, ...(l ?? [])]);
       setDraft("");
       setAdding(false);
+    });
+
+  const confirmMemory = (m: MemoryDTO) =>
+    run(`confirm:${m.id}`, async () => {
+      const updated = await api.confirmMemory(ws, agentId, m.id);
+      const next: MemoryDTO = updated && updated.id ? updated : { ...m, status: "confirmed" };
+      setItems((l) => (l ?? []).map((x) => (x.id === m.id ? next : x)));
     });
 
   const saveEdit = (m: MemoryDTO) =>
@@ -176,8 +186,15 @@ function MemoryList({
                   </div>
                 ) : (
                   <>
-                    <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                    <p className="text-sm break-words whitespace-pre-wrap">{m.content}</p>
+                    {m.quote && <p className="mt-1 border-l-2 border-line pl-2 text-xs break-words text-muted italic">De: “{m.quote}”</p>}
+                    {m.status === "tentative" && (
+                      <p className="mt-1 text-xs text-muted">
+                        O agente anotou isto sem um trecho que bata com o que uma pessoa disse. Ele trata como provável, não como certo, até alguém confirmar.
+                      </p>
+                    )}
                     <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-subtle">
+                      {m.status === "tentative" && <Badge tone="warning">não confirmada</Badge>}
                       <Badge tone={m.source === "user" ? "neutral" : "agent"}>{SOURCE_LABEL[m.source]}</Badge>
                       {actorName({ members, agents }, m.createdBy)} · {formatRelative(m.updatedAt)}
                     </p>
@@ -185,7 +202,13 @@ function MemoryList({
                 )}
               </div>
               {editing !== m.id && (
-                <div className="flex shrink-0 items-start">
+                <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-start">
+                  {m.status === "tentative" && (
+                    <Button size="sm" icon={<Check className="size-4" />} disabled={!canEdit || (busy !== null && busy !== `confirm:${m.id}`)} loading={busy === `confirm:${m.id}`} onClick={() => void confirmMemory(m)}>
+                      Confirmar
+                    </Button>
+                  )}
+                  <div className="flex">
                   <IconButton
                     size="sm"
                     label="Editar memória"
@@ -200,6 +223,7 @@ function MemoryList({
                   <IconButton size="sm" label="Apagar memória" disabled={!canEdit} onClick={() => setConfirm(m)} className="hover:text-danger">
                     <Trash2 className="size-4" />
                   </IconButton>
+                  </div>
                 </div>
               )}
             </li>
@@ -223,6 +247,118 @@ function MemoryList({
             toast.success("Memória apagada.");
           });
         }}
+      />
+    </section>
+  );
+}
+
+/** Procedimentos que o próprio agente escreveu depois de um trabalho de vários passos. */
+function LearnedSkills({ agent, canEdit }: { agent: AgentDTO; canEdit: boolean }) {
+  const ws = useWsId();
+  const { save, saving, error: saveError } = useSaveAgent(ws, agent);
+  const [items, setItems] = useState<SkillDTO[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<SkillDTO | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setError(null);
+    api
+      .listSkills(ws)
+      .then((l) => setItems(l.filter((s) => s.kind === "learned" && s.agentId === agent.id).sort((a, b) => b.updatedAt - a.updatedAt)))
+      .catch((e) => setError(errorMessage(e)));
+  }, [ws, agent.id]);
+  useEffect(load, [load]);
+
+  const remove = async () => {
+    if (!confirm) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.deleteSkill(ws, confirm.id);
+      setItems((l) => (l ?? []).filter((x) => x.id !== confirm.id));
+      toast.success("Procedimento apagado.");
+    } catch (e) {
+      setActionError(errorMessage(e));
+    } finally {
+      setBusy(false);
+      setConfirm(null);
+    }
+  };
+
+  return (
+    <section aria-labelledby="learned-skills-title">
+      <h3 id="learned-skills-title" className="text-sm font-semibold">
+        Procedimentos aprendidos
+      </h3>
+      <p className="mb-2 text-xs text-muted">
+        Anotações de passo a passo que {agent.name} escreveu para si depois de terminar um trabalho de vários passos. São uma lembrança de como fazer algo, não
+        instruções de alguém, e não dão nenhuma permissão.
+      </p>
+      <div className="mb-3 rounded-md border border-line bg-surface px-3 py-2">
+        <Toggle
+          label="Guardar procedimentos depois de um trabalho"
+          description="Desligado, o agente para de anotar novos. Os que já existem continuam aqui até você apagar."
+          checked={agent.learnSkills ?? false}
+          onChange={(v) => void save({ learnSkills: v }, "")}
+          disabled={!canEdit || saving}
+          disabledReason={canEdit ? undefined : "Só o responsável ou um admin muda."}
+        />
+      </div>
+      <InlineError message={saveError ?? actionError} />
+
+      {error ? (
+        <ErrorState message={error} onRetry={load} />
+      ) : items === null ? (
+        <LoadingState />
+      ) : items.length === 0 ? (
+        <p className="rounded-md border border-dashed border-line px-3 py-4 text-center text-sm text-muted">Nenhum procedimento guardado ainda.</p>
+      ) : (
+        <ul className="divide-y divide-line rounded-md border border-line bg-surface">
+          {items.map((s) => {
+            const isOpen = open === s.id;
+            return (
+              <li key={s.id} className="px-3 py-2.5">
+                <div className="flex items-start gap-2">
+                  <button
+                    type="button"
+                    aria-expanded={isOpen}
+                    aria-controls={`learned-${s.id}`}
+                    onClick={() => setOpen(isOpen ? null : s.id)}
+                    className="flex min-h-9 min-w-0 flex-1 items-start gap-2 rounded-sm text-left max-md:min-h-11"
+                  >
+                    <ChevronDown className={cn("mt-0.5 size-4 shrink-0 text-subtle transition-transform", !isOpen && "-rotate-90")} aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium break-words">{s.name}</span>
+                      {s.description && <span className="block text-xs break-words text-muted">{s.description}</span>}
+                      <span className="block text-xs text-subtle">atualizado {formatRelative(s.updatedAt)}</span>
+                    </span>
+                  </button>
+                  <IconButton size="sm" label={`Apagar ${s.name}`} title="Apagar" disabled={!canEdit} onClick={() => setConfirm(s)} className="shrink-0 hover:text-danger">
+                    <Trash2 className="size-4" />
+                  </IconButton>
+                </div>
+                {isOpen && (
+                  <pre id={`learned-${s.id}`} className="mt-2 max-h-80 overflow-y-auto rounded-md bg-surface-2 p-3 font-mono text-xs break-words whitespace-pre-wrap">
+                    {s.body || "Sem conteúdo."}
+                  </pre>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <ConfirmDialog
+        open={!!confirm}
+        onClose={() => setConfirm(null)}
+        title={`Apagar "${confirm?.name}"?`}
+        body={<>{agent.name} deixa de lembrar deste passo a passo. Se o trabalho se repetir, ele pode anotar de novo.</>}
+        confirmLabel="Apagar"
+        danger
+        loading={busy}
+        onConfirm={() => void remove()}
       />
     </section>
   );

@@ -6,6 +6,7 @@ import { channelAudienceById } from "./channels";
 import { adminUserIds } from "./members";
 import { postSystemMessage } from "./messages";
 import { links, notify } from "./notify";
+import { closeJobActions } from "./trust";
 import { toApprovalDTO, toJobDTO, type AgentRow, type ApprovalRow, type ChannelRow, type JobRow } from "./rows";
 
 export async function getJobRow(db: D1Database, wsId: string, jobId: string): Promise<JobRow | null> {
@@ -28,7 +29,17 @@ export async function publishJob(ctx: HubCtx, job: JobRow, opts: { agentChanged?
 }
 
 export async function publishApproval(ctx: HubCtx, approval: ApprovalRow): Promise<ApprovalDTO> {
-  const dto = toApprovalDTO(approval);
+  let action: ApprovalDTO["action"];
+  if (approval.action_id) {
+    const a = await first<{ connector_name: string; tool: string; summary: string }>(
+      ctx.env.DB,
+      "SELECT connector_name, tool, summary FROM agent_actions WHERE workspace_id = ? AND id = ?",
+      ctx.wsId,
+      approval.action_id,
+    );
+    if (a) action = { connectorName: a.connector_name, tool: a.tool, summary: a.summary };
+  }
+  const dto = toApprovalDTO(approval, action);
   const audience = new Set(await adminUserIds(ctx.env.DB, ctx.wsId));
   audience.add(approval.approver_user_id);
   await ctx.rt.publish({ type: "approval.upserted", approval: dto }, [...audience]);
@@ -46,6 +57,11 @@ export interface CreateJobInput {
   parentJobId?: string | null;
   routineId?: string | null;
   taskId?: string | null;
+  /** "prepare" = preparação automática (só lê e rascunha). */
+  mode?: string | null;
+  /** Canal de conversa externo por onde o pedido chegou; a resposta volta por ele. */
+  replyVia?: "telegram" | "whatsapp" | null;
+  replyTo?: string | null;
 }
 
 /** Trabalho que ninguém pediu: rotina, ou agente sem pedido humano na cadeia. */
@@ -61,7 +77,8 @@ export function isSelfStarted(input: Pick<CreateJobInput, "origin" | "requestedB
 export async function createJob(ctx: HubCtx, input: CreateJobInput): Promise<JobRow> {
   const db = ctx.env.DB;
   const now = Date.now();
-  const needsApproval = isSelfStarted(input) && input.agent.self_start_policy === "ask";
+  // Preparação automática não altera nada fora do Puxibot, então não pede aprovação para começar.
+  const needsApproval = isSelfStarted(input) && input.agent.self_start_policy === "ask" && input.mode !== "prepare";
   const job: JobRow = {
     id: newId(),
     workspace_id: ctx.wsId,
@@ -92,13 +109,17 @@ export async function createJob(ctx: HubCtx, input: CreateJobInput): Promise<Job
     no_runner_notified_at: null,
     task_id: input.taskId ?? null,
     waiting_for_runner: 0,
+    mode: input.mode ?? null,
+    reply_via: input.replyVia ?? null,
+    reply_to: input.replyTo ?? null,
   };
   const statements = [
     stmt(
       db,
       `INSERT INTO jobs (id, workspace_id, agent_id, channel_id, thread_root_id, trigger_message_id, origin,
-         requested_by_user_id, parent_job_id, routine_id, prompt, status, attempts, input_tokens, output_tokens, created_at, task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)`,
+         requested_by_user_id, parent_job_id, routine_id, prompt, status, attempts, input_tokens, output_tokens, created_at, task_id,
+         mode, reply_via, reply_to)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?)`,
       job.id,
       job.workspace_id,
       job.agent_id,
@@ -113,6 +134,9 @@ export async function createJob(ctx: HubCtx, input: CreateJobInput): Promise<Job
       job.status,
       job.created_at,
       job.task_id,
+      job.mode ?? null,
+      job.reply_via ?? null,
+      job.reply_to ?? null,
     ),
   ];
   let approval: ApprovalRow | null = null;
@@ -173,6 +197,8 @@ export interface AgentWorkRequest {
   prompt: string;
   triggerMessageId: string | null;
   threadRootId: string | null;
+  replyVia?: "telegram" | "whatsapp" | null;
+  replyTo?: string | null;
 }
 
 /**
@@ -183,7 +209,10 @@ export async function requestAgentWork(ctx: HubCtx, req: AgentWorkRequest): Prom
   const db = ctx.env.DB;
   const { agent } = req;
   let blocked: string | null = null;
-  if (agent.status === "paused") {
+  if (agent.system_kind === "builder" && req.channel.kind !== "dm") {
+    // O agente criador só trabalha na conversa com a pessoa dona dele (tela "Montar com o criador").
+    blocked = `${agent.name} só conversa na tela “Montar com o criador”.`;
+  } else if (agent.status === "paused") {
     blocked = `${agent.name} (@${agent.handle}) está pausado e não vai responder agora.`;
   } else if (!(await canTalkTo(db, agent, req.userId))) {
     blocked = agent.is_assistant
@@ -204,6 +233,8 @@ export async function requestAgentWork(ctx: HubCtx, req: AgentWorkRequest): Prom
     threadRootId: req.threadRootId,
     triggerMessageId: req.triggerMessageId,
     requestedByUserId: req.userId,
+    replyVia: req.replyVia ?? null,
+    replyTo: req.replyTo ?? null,
   });
 }
 
@@ -239,6 +270,7 @@ export async function cancelJob(ctx: HubCtx, job: JobRow): Promise<JobRow | null
   if (job.runner_id && (job.status === "assigned" || job.status === "running")) {
     await ctx.rt.cancelOnRunner(job.id, job.runner_id);
   }
+  await closeJobActions(ctx, job.id);
   const pending = await first<ApprovalRow>(
     ctx.env.DB,
     "SELECT * FROM approvals WHERE workspace_id = ? AND job_id = ? AND status = 'pending'",

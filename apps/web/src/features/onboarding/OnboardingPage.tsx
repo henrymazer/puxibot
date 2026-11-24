@@ -157,9 +157,8 @@ export function OnboardingPage() {
                 </h2>
                 <div className="mt-4">
                   {current === "uso" && <UsoStep {...stepProps} />}
-                  {current === "negocio" && <NegocioStep {...stepProps} />}
                   {current === "voce" && <VoceStep {...stepProps} />}
-                  {current === "time" && <TimeStep {...stepProps} />}
+                  {current === "montar" && <MontarStep {...stepProps} />}
                   {current === "computador" && <ComputadorStep {...stepProps} />}
                   {current === "convite" && <ConviteStep {...stepProps} />}
                 </div>
@@ -241,74 +240,6 @@ function UsoStep({ progress, done, back }: StepProps) {
   );
 }
 
-// ---------- Área de atuação ----------
-function NegocioStep({ progress, done, skip, back }: StepProps) {
-  const ws = useWsId();
-  const workspace = useWorkspace((s) => s.workspace);
-  const me = useWorkspace((s) => s.me);
-  const admin = isAdmin(me?.role);
-  const initial = workspace?.business ?? "";
-  const known = BUSINESSES.includes(initial);
-  const [choice, setChoice] = useState(initial ? (known ? initial : OTHER_BUSINESS) : "");
-  const [other, setOther] = useState(known ? "" : initial);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const value = choice === OTHER_BUSINESS ? other.trim() : choice;
-
-  const save = async () => {
-    if (!admin || value === (workspace?.business ?? "")) return done();
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await api.updateWorkspace(ws, { business: value || null });
-      const next = updated && updated.id ? updated : { ...workspace!, business: value || null };
-      useWorkspace.setState({ workspace: next });
-      useSession.getState().updateWorkspace(next);
-      done();
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <p className="text-sm text-muted">
-        {progress.kind === "team" ? "Com isso sugerimos um time inicial de agentes com as funções do seu ramo." : "Com isso sugerimos agentes úteis para o seu trabalho."}
-      </p>
-      <fieldset className="mt-4">
-        <legend className="sr-only">Ramo</legend>
-        <div className="flex flex-wrap gap-2">
-          {BUSINESSES.map((b) => (
-            <button
-              key={b}
-              type="button"
-              aria-pressed={choice === b}
-              disabled={!admin}
-              onClick={() => setChoice(choice === b ? "" : b)}
-              className={cn(
-                "h-10 rounded-full border px-4 text-sm max-md:h-11",
-                choice === b ? "border-primary bg-primary-soft text-primary-text" : "border-line-strong bg-surface hover:bg-surface-2",
-              )}
-            >
-              {b}
-            </button>
-          ))}
-        </div>
-        {choice === OTHER_BUSINESS && (
-          <Input className="mt-3" aria-label="Conte em poucas palavras" placeholder="Ex.: clínica veterinária" value={other} onChange={(e) => setOther(e.target.value)} maxLength={200} />
-        )}
-      </fieldset>
-      {!admin && <LockedNote>Só admins mudam o ramo do workspace.</LockedNote>}
-      <div className="mt-3">
-        <InlineError message={error} />
-      </div>
-      <StepFooter back={back} skip={skip} primary="Continuar" onPrimary={() => void save()} loading={busy} />
-    </>
-  );
-}
-
 // ---------- Seu perfil ----------
 function VoceStep({ done, skip, back }: StepProps) {
   const ws = useWsId();
@@ -368,7 +299,79 @@ function VoceStep({ done, skip, back }: StepProps) {
   );
 }
 
-// ---------- Agentes iniciais ----------
+// ---------- Montar o time ----------
+/**
+ * O time é montado pelo agente criador, numa conversa. Ele roda no computador da pessoa, então este
+ * passo vem depois de "Ligar seu computador". Sem computador ligado, a saída é o time básico pronto.
+ */
+function MontarStep(props: StepProps) {
+  const { done, skip, back } = props;
+  const ws = useWsId();
+  const navigate = useNavigate();
+  const myUserId = useWorkspace((s) => s.myUserId);
+  const runners = useWorkspace((s) => s.runners);
+  const agents = useWorkspace((s) => s.agents);
+  const online = Object.values(runners).some((r) => r.userId === myUserId && r.online);
+  const mine = useMemo(() => Object.values(agents).filter((a) => !a.isAssistant && a.systemKind !== "builder"), [agents]);
+  const [basic, setBasic] = useState(false);
+
+  if (basic) return <TimeStep {...props} back={() => setBasic(false)} />;
+
+  return (
+    <>
+      <p className="text-sm text-muted">
+        Conte ao criador como o seu trabalho funciona hoje e o que você quer que os agentes façam. Ele faz poucas perguntas e propõe canais, agentes, rotinas
+        e as ferramentas a conectar. Você revisa tudo antes de criar.
+      </p>
+      {mine.length > 0 && (
+        <p className="mt-3 flex items-center gap-2 text-sm font-medium text-success" role="status">
+          <CheckCircle2 className="size-5" aria-hidden /> O workspace já tem {mine.length} {mine.length === 1 ? "agente" : "agentes"}.
+        </p>
+      )}
+      <Card className="mt-4">
+        <p className="font-medium">O que dizer para começar</p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted">
+          <li>O que a empresa ou o time faz, e para quem.</li>
+          <li>Quem cuida de quê hoje, e o que mais toma tempo.</li>
+          <li>Que ferramentas vocês usam (anúncios, e-mail, planilhas, gestão de projetos).</li>
+        </ul>
+      </Card>
+      {!online && (
+        <Card className="mt-4 bg-warning-soft">
+          <p className="font-medium text-warning">O criador precisa de um computador ligado</p>
+          <p className="mt-1 text-sm text-muted">
+            Ele é um agente como os outros e trabalha no seu computador. Volte um passo para ligar, ou comece com um time básico pronto e chame o criador
+            depois, pela tela Equipe.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {back && (
+              <Button size="sm" onClick={back}>
+                Ligar meu computador
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setBasic(true)}>
+              Usar um time básico
+            </Button>
+          </div>
+        </Card>
+      )}
+      <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+        {back && (
+          <Button variant="ghost" onClick={back}>
+            Voltar
+          </Button>
+        )}
+        <span className="flex-1" />
+        <Button onClick={mine.length > 0 ? done : skip}>{mine.length > 0 ? "Continuar" : "Montar depois"}</Button>
+        <Button variant="primary" disabled={!online} onClick={() => navigate(`${paths.setup(ws)}?guia=1`)}>
+          {mine.length > 0 ? "Montar mais com o criador" : "Conversar com o criador"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+// ---------- Time básico (sem computador ligado) ----------
 function TimeStep({ done, skip, back }: StepProps) {
   const ws = useWsId();
   const workspace = useWorkspace((s) => s.workspace);

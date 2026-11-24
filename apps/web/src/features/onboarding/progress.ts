@@ -3,15 +3,18 @@
  * Funções puras (testadas em progress.test.ts) + leitura/gravação por workspace no localStorage.
  */
 
-export const STEPS = ["uso", "voce", "computador", "negocio", "time", "convite"] as const;
+/**
+ * O computador vem antes de montar o time: quem monta é o agente criador, e ele precisa de um
+ * computador ligado para trabalhar.
+ */
+export const STEPS = ["uso", "voce", "computador", "montar", "convite"] as const;
 export type StepId = (typeof STEPS)[number];
 
 export const STEP_LABEL: Record<StepId, string> = {
   uso: "Tipo de espaço",
   voce: "Seu perfil",
   computador: "Ligar seu computador",
-  negocio: "Área de atuação",
-  time: "Agentes iniciais",
+  montar: "Montar o time",
   convite: "Chamar o time",
 };
 
@@ -115,7 +118,7 @@ export interface ChecklistItem {
 
 export function computeChecklist(i: ChecklistInput): ChecklistItem[] {
   const items: ChecklistItem[] = [
-    { id: "agente", label: "Montar o time de agentes", hint: "Crie um agente ou use o time inicial.", done: i.agentCount > 0 },
+    { id: "agente", label: "Montar o time de agentes", hint: "Conte ao criador como você trabalha e ele propõe o time.", done: i.agentCount > 0 },
     { id: "computador", label: "Ligar seu computador", hint: "Os agentes rodam no seu computador, com a sua assinatura.", done: i.myRunnerCount > 0 },
     { id: "conversa", label: "Mandar a primeira mensagem para um agente", hint: "Abra a conversa com um agente e peça algo.", done: i.talkedToAgent },
     { id: "tarefa", label: "Criar uma tarefa", hint: "Use o quadro para acompanhar o trabalho de pessoas e agentes.", done: (i.taskCount ?? 0) > 0 },
@@ -140,12 +143,19 @@ export function loadProgress(ws: string): OnboardingProgress | null {
     const p = JSON.parse(raw) as Partial<OnboardingProgress>;
     if (!p || typeof p !== "object" || !p.kind) return null;
     const base = initialProgress(p.kind);
+    // Guias salvos antes da troca: "Área de atuação" e "Agentes iniciais" viraram "Montar o time".
+    const migrate = (s: string): string => (s === "time" || s === "negocio" ? "montar" : s);
+    const valid = (list: string[] | undefined, fallback: StepId[]): StepId[] => [
+      ...new Set((list ?? fallback).map(migrate).filter((s): s is StepId => (STEPS as readonly string[]).includes(s))),
+    ];
+    const done = valid(p.done, base.done);
+    const current = migrate(p.current ?? "");
     return {
       ...base,
       ...p,
-      done: (p.done ?? base.done).filter((s): s is StepId => (STEPS as readonly string[]).includes(s)),
-      skipped: (p.skipped ?? []).filter((s): s is StepId => (STEPS as readonly string[]).includes(s)),
-      current: (STEPS as readonly string[]).includes(p.current ?? "") ? (p.current as StepId) : base.current,
+      done,
+      skipped: valid(p.skipped, []).filter((s) => !done.includes(s)),
+      current: (STEPS as readonly string[]).includes(current) ? (current as StepId) : base.current,
     };
   } catch {
     return null;

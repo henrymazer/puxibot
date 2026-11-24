@@ -145,6 +145,35 @@ program
     }
   });
 
+const whatsapp = program.command("whatsapp").description("conversa com um agente seu pelo WhatsApp, vinculado por QR code neste computador (uso pessoal)");
+whatsapp
+  .command("conectar")
+  .description("mostra o QR code para vincular o WhatsApp a este computador")
+  .requiredOption("--agente <handle>", "agente que vai responder (o handle, sem @)")
+  .option("--numero-separado", "vincula um número só do agente, em vez do seu próprio")
+  .option("--meu-numero <numero>", "com --numero-separado: seu número pessoal, o único que pode escrever (ex.: 5511999990000)")
+  .option("--aceito-o-risco", "confirma o aviso sem perguntar (cliente não oficial do WhatsApp)")
+  .action(async (o: { agente: string; numeroSeparado?: boolean; meuNumero?: string; aceitoORisco?: boolean }) => {
+    const { whatsappConnect } = await import("./whatsapp/command.js");
+    await whatsappConnect(o);
+    process.exit(0);
+  });
+whatsapp
+  .command("desconectar")
+  .description("desvincula o WhatsApp e apaga as chaves deste computador")
+  .action(async () => {
+    const { whatsappDisconnect } = await import("./whatsapp/command.js");
+    await whatsappDisconnect();
+    process.exit(0);
+  });
+whatsapp
+  .command("status")
+  .description("mostra se o WhatsApp está vinculado e com qual agente")
+  .action(async () => {
+    const { whatsappStatus } = await import("./whatsapp/command.js");
+    console.log(await whatsappStatus());
+  });
+
 program
   .command("mcp")
   .description("servidor MCP das ferramentas do Puxibot (iniciado pela CLI de IA durante um job)")
@@ -155,11 +184,11 @@ program
 
 program
   .command("mcp-proxy", { hidden: true })
-  .description("intermediário somente leitura para conectores (iniciado pela CLI de IA durante um job)")
+  .description("intermediário entre a CLI de IA e um conector: checa a permissão de cada ação no hub (iniciado durante um job)")
   .requiredOption("--config-env <nome>", "variável de ambiente com a configuração do conector")
   .action(async (o: { configEnv: string }) => {
-    const { runReadOnlyProxy } = await import("./mcp/readonlyProxy.js");
-    await runReadOnlyProxy(o.configEnv);
+    const { runConnectorGateway } = await import("./mcp/gateway.js");
+    await runConnectorGateway(o.configEnv);
   });
 
 program

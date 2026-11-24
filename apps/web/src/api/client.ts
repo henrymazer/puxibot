@@ -39,6 +39,16 @@ import type {
   WorkspaceDTO,
   TelegramLinkDTO,
   MyNotificationDTO,
+  CatalogApp,
+  ChatLinkDTO,
+  ConnectorAuthMethod,
+  SetupPlan,
+  SetupPlanDTO,
+  SetupSessionDTO,
+  TrustRuleDTO,
+  UsageEntryDTO,
+  UsageSummaryDTO,
+  VaultItemDTO,
 } from "@puxibot/shared";
 
 export class ApiClientError extends Error {
@@ -217,7 +227,34 @@ export interface ConnectorInput {
   /** Só escrita: nunca volta no GET. Omitido = mantém o que já existe. */
   headers?: Record<string, string>;
   env?: Record<string, string>;
+  /** "oauth" = login pelo navegador (o hub guarda e renova o acesso). */
+  auth?: "static" | "oauth";
+  oauthClientId?: string | null;
+  oauthScope?: string | null;
 }
+export interface CatalogConnectInput {
+  catalogId: string;
+  name?: string;
+  method: ConnectorAuthMethod;
+  token?: string;
+  clientId?: string;
+  grantAgentIds?: string[];
+}
+export interface VaultInput {
+  name: string;
+  site: string;
+  username: string;
+  password: string;
+}
+/** O que este hub tem ligado (GET /features). */
+export interface HubFeatures {
+  transcription: boolean;
+  telegramChat: boolean;
+  whatsappChat: boolean;
+  trustModel: boolean;
+}
+export const NO_FEATURES: HubFeatures = { transcription: false, telegramChat: false, whatsappChat: false, trustModel: false };
+
 export interface PushSubscriptionInput {
   endpoint: string;
   keys: { p256dh: string; auth: string };
@@ -600,6 +637,109 @@ export class ApiClient {
     await this.request("DELETE", this.w(ws, `/connectors/${id}`));
   }
 
+  // ---------- Catálogo e login de conectores ----------
+  async getCatalog(ws: string): Promise<{ items: CatalogApp[]; callbackUrl: string }> {
+    const d = await this.request<{ items?: CatalogApp[]; callbackUrl?: string }>("GET", this.w(ws, "/connectors/catalog"));
+    return { items: d?.items ?? [], callbackUrl: d?.callbackUrl ?? "" };
+  }
+  async connectFromCatalog(ws: string, input: CatalogConnectInput): Promise<ConnectorDTO> {
+    return unwrap<ConnectorDTO>(await this.request("POST", this.w(ws, "/connectors/from-catalog"), input), "connector");
+  }
+  /** Endereço da tela de consentimento do serviço; a interface manda o navegador para lá. */
+  startConnectorOAuth(ws: string, id: string): Promise<{ url: string }> {
+    return this.request("POST", this.w(ws, `/connectors/${id}/oauth/start`));
+  }
+  async grantConnector(ws: string, id: string, agentIds: string[]): Promise<void> {
+    await this.request("POST", this.w(ws, `/connectors/${id}/grant`), { agentIds });
+  }
+
+  // ---------- Agente criador ----------
+  openSetupSession(ws: string): Promise<SetupSessionDTO> {
+    return this.request("POST", this.w(ws, "/setup/session"));
+  }
+  async getSetupPlan(ws: string): Promise<SetupPlanDTO | null> {
+    return (await this.request<{ plan: SetupPlanDTO | null }>("GET", this.w(ws, "/setup/plan")))?.plan ?? null;
+  }
+  updateSetupPlan(ws: string, id: string, plan: SetupPlan): Promise<SetupPlanDTO> {
+    return this.request("PUT", this.w(ws, `/setup/plans/${id}`), plan);
+  }
+  applySetupPlan(ws: string, id: string): Promise<SetupPlanDTO> {
+    return this.request("POST", this.w(ws, `/setup/plans/${id}/apply`));
+  }
+  async discardSetupPlan(ws: string, id: string): Promise<void> {
+    await this.request("POST", this.w(ws, `/setup/plans/${id}/discard`));
+  }
+
+  // ---------- Regras de permissão e uso ----------
+  async listTrustRules(ws: string, agentId: string): Promise<TrustRuleDTO[]> {
+    return items(await this.request("GET", this.w(ws, `/agents/${agentId}/trust-rules`)));
+  }
+  setTrustRule(ws: string, agentId: string, rule: { connectorId: string; tool?: string; effect: TrustRuleDTO["effect"] }): Promise<TrustRuleDTO> {
+    return this.request("PUT", this.w(ws, `/agents/${agentId}/trust-rules`), rule);
+  }
+  async deleteTrustRule(ws: string, agentId: string, ruleId: string): Promise<void> {
+    await this.request("DELETE", this.w(ws, `/agents/${agentId}/trust-rules/${ruleId}`));
+  }
+  async listUsage(ws: string, q: { period?: string; agentId?: string; before?: number; limit?: number } = {}): Promise<{ items: UsageEntryDTO[]; nextBefore: number | null }> {
+    const d = await this.request<{ items?: UsageEntryDTO[]; nextBefore?: number | null }>("GET", this.w(ws, "/usage"), undefined, q);
+    return { items: d?.items ?? [], nextBefore: d?.nextBefore ?? null };
+  }
+  getUsageSummary(ws: string, q: { period?: string; agentId?: string } = {}): Promise<UsageSummaryDTO> {
+    return this.request("GET", this.w(ws, "/usage/summary"), undefined, q);
+  }
+  usageExportUrl(ws: string, period?: string): string {
+    return `${this.baseUrl}/api${this.w(ws, "/usage/export")}${qs({ period })}`;
+  }
+
+  // ---------- Preparação automática ----------
+  async setProactive(ws: string, agentId: string, input: { enabled: boolean; cron?: string; timezone?: string }): Promise<RoutineDTO | null> {
+    return (await this.request<{ routine: RoutineDTO | null }>("PUT", this.w(ws, `/agents/${agentId}/proactive`), input))?.routine ?? null;
+  }
+
+  // ---------- Canais de conversa, cofre e voz ----------
+  async getFeatures(ws: string): Promise<HubFeatures> {
+    try {
+      return { ...NO_FEATURES, ...(await this.request<Partial<HubFeatures>>("GET", this.w(ws, "/features"))) };
+    } catch (err) {
+      // Hub antigo (ou modo demonstração) sem a rota: nada ligado.
+      if (err instanceof ApiClientError && err.status === 404) return NO_FEATURES;
+      throw err;
+    }
+  }
+  async listChatLinks(ws: string): Promise<ChatLinkDTO[]> {
+    return items(await this.request("GET", this.w(ws, "/chat-links")));
+  }
+  createChatLink(ws: string, provider: ChatLinkDTO["provider"], agentId: string): Promise<ChatLinkDTO> {
+    return this.request("POST", this.w(ws, "/chat-links"), { provider, agentId });
+  }
+  async deleteChatLink(ws: string, provider: ChatLinkDTO["provider"]): Promise<void> {
+    await this.request("DELETE", this.w(ws, `/chat-links/${provider}`));
+  }
+  async listVault(ws: string): Promise<VaultItemDTO[]> {
+    return items(await this.request("GET", this.w(ws, "/vault")));
+  }
+  createVaultItem(ws: string, input: VaultInput): Promise<VaultItemDTO> {
+    return this.request("POST", this.w(ws, "/vault"), input);
+  }
+  updateVaultItem(ws: string, id: string, patch: Partial<VaultInput>): Promise<VaultItemDTO> {
+    return this.request("PATCH", this.w(ws, `/vault/${id}`), patch);
+  }
+  async deleteVaultItem(ws: string, id: string): Promise<void> {
+    await this.request("DELETE", this.w(ws, `/vault/${id}`));
+  }
+  /** Transcreve um áudio curto gravado no navegador (precisa de `features.transcription`). */
+  async transcribe(ws: string, audio: Blob): Promise<string> {
+    const res = await this.fetchImpl(`${this.baseUrl}/api${this.w(ws, "/transcribe")}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": audio.type || "audio/webm" },
+      body: audio,
+    });
+    const data = (await res.json().catch(() => null)) as { text?: string; error?: { code?: string; message?: string } } | null;
+    if (!res.ok) throw new ApiClientError(res.status, data?.error?.code ?? `http_${res.status}`, data?.error?.message ?? defaultMessage(res.status));
+    return data?.text ?? "";
+  }
+
   // ---------- Push e Telegram ----------
   /** Chave VAPID pública, ou null se o hub não tiver push configurado (404). */
   async getPushPublicKey(): Promise<string | null> {
@@ -668,6 +808,10 @@ export class ApiClient {
       "memory",
     );
   }
+  /** Confirma uma memória que um agente gravou sem citação conferida. */
+  async confirmMemory(ws: string, agentId: string | null, id: string): Promise<MemoryDTO> {
+    return unwrap<MemoryDTO>(await this.request("POST", `${this.memoryPath(ws, agentId, id)}/confirm`), "memory");
+  }
   async deleteMemory(ws: string, agentId: string | null, id: string): Promise<void> {
     await this.request("DELETE", this.memoryPath(ws, agentId, id));
   }
@@ -700,8 +844,19 @@ export class ApiClient {
     id: string,
     decision: "approved" | "rejected",
     note?: string,
+    /** Só em aprovação de ação: vale só esta vez, até o fim do trabalho, ou sempre. */
+    scope?: "once" | "job" | "always",
   ): Promise<ApprovalDTO | undefined> {
-    const d = await this.request("POST", this.w(ws, `/approvals/${id}/decide`), { decision, note: note || undefined });
+    const d = await this.request("POST", this.w(ws, `/approvals/${id}/decide`), { decision, note: note || undefined, ...(scope ? { scope } : {}) });
+    return d ? unwrap<ApprovalDTO>(d, "approval") : undefined;
+  }
+  /** Responde um pedido de segredo. O valor vai só nesta requisição; a resposta não o traz de volta. */
+  async answerSecretRequest(ws: string, id: string, answer: { secret: string; username?: string } | null): Promise<ApprovalDTO | undefined> {
+    const d = await this.request(
+      "POST",
+      this.w(ws, `/approvals/${id}/decide`),
+      answer ? { decision: "approved", secret: answer.secret, ...(answer.username ? { username: answer.username } : {}) } : { decision: "rejected" },
+    );
     return d ? unwrap<ApprovalDTO>(d, "approval") : undefined;
   }
 

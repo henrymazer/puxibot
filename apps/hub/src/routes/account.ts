@@ -2,11 +2,14 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { pushSubscriptionSchema, type MyNotificationDTO, type TelegramLinkDTO } from "@puxibot/shared";
 import { all, first, newId, run } from "../lib/db";
-import { badRequest, notFound } from "../lib/errors";
-import { randomCode, timingSafeEqual } from "../lib/crypto";
-import { intParam, readBody } from "../lib/validate";
+import { badRequest, HttpError, notFound } from "../lib/errors";
+import { randomCode, sha256Hex, timingSafeEqual } from "../lib/crypto";
+import { intParam, readBody, readTextLimited } from "../lib/validate";
+import { handleInbound, linkCodeFrom, sendChatText, verifyWhatsAppSignature, whatsappConfigured, whatsappTexts, type WhatsAppWebhook } from "../domain/chatChannels";
 import { authUserId, requireUser } from "../http/auth";
 import type { BaseEnv } from "../http/types";
+import { publicUrl } from "../env";
+import { finishOAuth } from "../domain/connectorOauth";
 import { toNotificationDTO, type NotificationRow } from "../domain/rows";
 import { MAX_PUSH_SUBSCRIPTIONS, pushEndpointProblem, vapidConfigured } from "../domain/push";
 import { botUsername, telegramApi, telegramConfigured } from "../domain/telegram";
@@ -132,7 +135,7 @@ accountRoutes.delete("/telegram/link", requireUser(), async (c) => {
 });
 
 interface TelegramUpdate {
-  message?: { chat?: { id?: number | string }; text?: string };
+  message?: { chat?: { id?: number | string; type?: string }; text?: string };
 }
 
 /** Webhook do bot (configure com setWebhook para <PUBLIC_URL>/api/telegram/webhook/<TELEGRAM_WEBHOOK_SECRET>). */
@@ -151,8 +154,20 @@ accountRoutes.post("/telegram/webhook/:secret", async (c) => {
   const text = update.message?.text?.trim() ?? "";
   const m = /^\/start(?:@\w+)?\s+([A-Za-z0-9-]{4,40})$/.exec(text);
   if (chatId == null) return c.json({ ok: true });
-  let reply: string;
-  if (m) {
+  // Só conversa privada com o bot: num grupo, qualquer participante falaria com o agente da pessoa.
+  const privateChat = update.message?.chat?.type === undefined || update.message.chat.type === "private";
+  let reply: string | null;
+  // Conversa com um agente: código de vínculo de conversa, ou mensagem de uma conta já vinculada.
+  const chatLinked = privateChat && (await first(c.env.DB, "SELECT 1 AS one FROM chat_links WHERE provider = 'telegram' AND external_id = ?", String(chatId)));
+  const chatCode = privateChat && m && (await first(c.env.DB, "SELECT 1 AS one FROM chat_links WHERE provider = 'telegram' AND external_id IS NULL AND link_code = ?", linkCodeFrom(text) ?? ""));
+  if (chatCode || (chatLinked && !m)) {
+    try {
+      reply = await handleInbound(c.env, "telegram", String(chatId), text);
+    } catch (err) {
+      console.error(JSON.stringify({ msg: "telegram inbound failed", error: String(err) }));
+      reply = "Não consegui passar sua mensagem ao agente agora. Tente de novo em instantes.";
+    }
+  } else if (m) {
     const code = m[1]!.toUpperCase().replace(/-/g, "");
     const changed = await run(c.env.DB, "UPDATE telegram_links SET chat_id = ?, enabled = 1 WHERE link_code = ?", String(chatId), code);
     reply = changed
@@ -164,6 +179,7 @@ accountRoutes.post("/telegram/webhook/:secret", async (c) => {
   } else {
     reply = "Para receber avisos, envie /start <código> com o código mostrado em Configurações › Notificações.";
   }
+  if (reply === null) return c.json({ ok: true });
   try {
     const res = await telegramApi(c.env, "sendMessage", { chat_id: chatId, text: reply });
     await res.body?.cancel();
@@ -171,4 +187,74 @@ accountRoutes.post("/telegram/webhook/:secret", async (c) => {
     console.warn(JSON.stringify({ msg: "telegram reply failed", error: String(err) }));
   }
   return c.json({ ok: true });
+});
+
+// ---------- WhatsApp (Cloud API) ----------
+/** Registro do webhook: a Meta manda o texto que você configurou e espera o desafio de volta. */
+accountRoutes.get("/whatsapp/webhook", async (c) => {
+  const expected = c.env.WHATSAPP_VERIFY_TOKEN?.trim();
+  const given = c.req.query("hub.verify_token") ?? "";
+  if (!whatsappConfigured(c.env) || !expected || c.req.query("hub.mode") !== "subscribe" || !(await timingSafeEqual(given, expected))) {
+    throw notFound("Rota não encontrada.");
+  }
+  return c.text(c.req.query("hub.challenge") ?? "", 200);
+});
+
+/** Mensagens recebidas. Só vale com a assinatura do app; responde 200 rápido para a Meta não reenviar. */
+accountRoutes.post("/whatsapp/webhook", async (c) => {
+  if (!whatsappConfigured(c.env)) throw notFound("Rota não encontrada.");
+  const raw = await readTextLimited(c, 256 * 1024);
+  if (!(await verifyWhatsAppSignature(c.env.WHATSAPP_APP_SECRET!.trim(), raw, c.req.header("X-Hub-Signature-256")))) {
+    throw notFound("Rota não encontrada.");
+  }
+  let payload: WhatsAppWebhook = {};
+  try {
+    payload = JSON.parse(raw) as WhatsAppWebhook;
+  } catch {
+    return c.json({ ok: true });
+  }
+  for (const msg of whatsappTexts(payload, c.env.WHATSAPP_PHONE_NUMBER_ID!.trim()).slice(0, 10)) {
+    try {
+      const reply = await handleInbound(c.env, "whatsapp", msg.from, msg.text);
+      if (reply) await sendChatText(c.env, "whatsapp", msg.from, reply);
+    } catch (err) {
+      console.error(JSON.stringify({ msg: "whatsapp inbound failed", error: String(err) }));
+    }
+  }
+  return c.json({ ok: true });
+});
+
+// ---------- Retorno do login OAuth de um conector ----------
+/**
+ * O serviço manda o navegador de volta para cá com `code` e `state`. Só quem começou o login (mesma sessão)
+ * consegue terminá-lo. Sempre responde com um redirecionamento para a tela de conectores, que mostra o
+ * resultado; o código e o estado nunca seguem para a interface.
+ */
+accountRoutes.get("/oauth/callback", async (c) => {
+  const origin = publicUrl(c.env, new URL(c.req.url).origin);
+  const back = (wsId: string | null, params: Record<string, string>) => {
+    const target = new URL(wsId ? `/w/${wsId}/config/conectores` : "/", origin);
+    for (const [k, v] of Object.entries(params)) target.searchParams.set(k, v);
+    return c.redirect(target.toString(), 302);
+  };
+  const state = c.req.query("state") ?? "";
+  const code = c.req.query("code") ?? "";
+  const auth = c.get("auth");
+  if (!auth || auth.kind !== "session") return back(null, { oauth: "erro", motivo: "Entre no Puxibot neste navegador e comece o login do conector de novo." });
+  // O workspace do fluxo, para voltar à tela certa mesmo quando o serviço devolve erro.
+  const flow = state ? await first<{ workspace_id: string; connector_id: string; user_id: string }>(c.env.DB, "SELECT workspace_id, connector_id, user_id FROM oauth_flows WHERE state_hash = ?", await sha256Hex(state)) : null;
+  const wsId = flow && flow.user_id === auth.userId ? flow.workspace_id : null;
+  const providerError = c.req.query("error");
+  if (providerError || !code || !state) {
+    if (flow && wsId) await run(c.env.DB, "DELETE FROM oauth_flows WHERE state_hash = ?", await sha256Hex(state));
+    const reason = providerError === "access_denied" ? "Você cancelou o login no serviço." : `O serviço devolveu um erro${providerError ? ` (${providerError.slice(0, 60)})` : ""}.`;
+    return back(wsId, { oauth: "erro", motivo: reason });
+  }
+  try {
+    const done = await finishOAuth(c.env, state, code, auth.userId);
+    return back(done.workspaceId, { oauth: "ok", conector: done.connectorId });
+  } catch (err) {
+    const reason = err instanceof HttpError ? err.message : "Não foi possível concluir o login.";
+    return back(wsId, { oauth: "erro", motivo: reason.slice(0, 300) });
+  }
 });

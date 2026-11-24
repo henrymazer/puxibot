@@ -53,6 +53,28 @@ export interface RunnerConfig {
    * assinatura). `auto: false` desliga neste computador; `model` troca o modelo usado.
    */
   memory?: { auto?: boolean; model?: string };
+  /**
+   * Procedimentos aprendidos: depois de um trabalho com vários passos, a mesma chamada curta da
+   * revisão de memória escreve o roteiro seguido, para reutilizar. `learn: false` desliga.
+   */
+  skills?: { learn?: boolean };
+  /**
+   * Navegador para os agentes (servidor MCP do Playwright). Desligado por padrão: a pessoa dona do
+   * computador liga aqui, e o responsável pelo agente liga o navegador no perfil dele.
+   * `command`/`args` trocam o comando (padrão: `npx -y @playwright/mcp@latest --headless --isolated`).
+   */
+  browser?: { enabled?: boolean; command?: string; args?: string[] };
+  /**
+   * Quanto o agente espera por uma aprovação de ação antes de seguir sem ela (padrão 600 s).
+   * A aprovação continua valendo na tela enquanto o trabalho não terminar.
+   */
+  approvals?: { waitSeconds?: number };
+  /**
+   * WhatsApp vinculado por QR code neste computador (`puxibot whatsapp conectar`), para você conversar
+   * com um agente seu. `mode`: "self-chat" (seu próprio número) ou "bot" (um número separado, que só
+   * aceita mensagens de `allowedNumber`). As chaves ficam em `whatsapp/session/`, fora deste arquivo.
+   */
+  whatsapp?: { enabled?: boolean; mode?: "self-chat" | "bot"; allowedNumber?: string; agent?: string };
   container?: {
     runtime?: "docker" | "podman";
     /** Imagem própria; padrão: construída a partir de docker/Dockerfile. */

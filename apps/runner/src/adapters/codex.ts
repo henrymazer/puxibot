@@ -110,18 +110,14 @@ export const codexAdapter: CliAdapter = {
           hdr[h] = varName;
         }
         if (Object.keys(hdr).length) cfg.push(`mcp_servers.${name}.env_http_headers=${toml(hdr)}`);
-      } else if (Object.keys(srv.env).length && input.mcpExec) {
-        // As variáveis do conector nunca entram no ambiente do Codex (nem do isolamento): vão
-        // numa variável só, de nome fixo, lida pelo `puxibot mcp-exec`, que inicia o conector.
-        const varName = `PUXIBOT_CONN_CFG_${idx}`;
-        env[varName] = JSON.stringify({ command: srv.command, args: srv.args, env: srv.env });
-        cfg.push(
-          `mcp_servers.${name}.command=${toml(input.mcpExec.command)}`,
-          `mcp_servers.${name}.args=${toml([...input.mcpExec.args, "--config-env", varName])}`,
-          `mcp_servers.${name}.env_vars=${toml([varName])}`,
-        );
       } else {
+        // O conector roda atrás do `puxibot mcp-proxy`, que lê a própria configuração (com os segredos
+        // do conector) de uma variável de nome fixo. Ela entra no ambiente do Codex, dentro do
+        // isolamento, e o Codex a repassa só a esse servidor. [SUPOSIÇÃO: env_vars, como acima.]
+        const vars = Object.keys(srv.env);
+        for (const k of vars) env[k] = srv.env[k]!;
         cfg.push(`mcp_servers.${name}.command=${toml(srv.command)}`, `mcp_servers.${name}.args=${toml(srv.args)}`);
+        if (vars.length) cfg.push(`mcp_servers.${name}.env_vars=${toml(vars)}`);
       }
     });
 

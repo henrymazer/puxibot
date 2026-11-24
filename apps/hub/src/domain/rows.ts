@@ -105,6 +105,9 @@ export interface AgentRow {
   status: AgentDTO["status"];
   created_at: number;
   updated_at: number;
+  trust_mode: AgentDTO["trustMode"];
+  system_kind: AgentDTO["systemKind"];
+  learn_skills: number;
 }
 
 export interface ChannelRow {
@@ -195,6 +198,9 @@ export interface JobRow {
   no_runner_notified_at: number | null;
   task_id: string | null;
   waiting_for_runner: number;
+  mode?: string | null;
+  reply_via?: "telegram" | "whatsapp" | null;
+  reply_to?: string | null;
 }
 
 export interface JobEventRow {
@@ -219,6 +225,10 @@ export interface ApprovalRow {
   decided_at: number | null;
   decision_note: string | null;
   created_at: number;
+  action_id?: string | null;
+  scope?: ApprovalDTO["scope"];
+  /** Só em kind 'secret': JSON de SecretTargetDTO. */
+  secret_target?: string | null;
 }
 
 export interface NotificationRow {
@@ -330,6 +340,9 @@ export function toAgentDTO(
     maxConcurrentJobs: r.max_concurrent_jobs,
     maxPrsPerHour: r.max_prs_per_hour,
     status: r.status,
+    trustMode: r.trust_mode === "auto" ? "auto" : "ask",
+    systemKind: r.system_kind === "builder" ? "builder" : null,
+    learnSkills: r.learn_skills !== 0,
     toolPerms: extra.toolPerms,
     skillIds: extra.skillIds,
     activity: extra.activity,
@@ -404,6 +417,7 @@ export function toJobDTO(r: JobRow): JobDTO {
     finishedAt: r.finished_at,
     waitingForRunner: r.status === "queued" && r.waiting_for_runner === 1,
     taskId: r.task_id ?? null,
+    mode: r.mode ?? null,
   };
 }
 
@@ -411,8 +425,21 @@ export function toJobEventDTO(r: JobEventRow): JobEventDTO {
   return { id: r.id, jobId: r.job_id, kind: r.kind, summary: r.summary, createdAt: r.created_at };
 }
 
-export function toApprovalDTO(r: ApprovalRow): ApprovalDTO {
+function parseSecretTarget(raw: string | null | undefined): ApprovalDTO["secret"] {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as ApprovalDTO["secret"];
+  } catch {
+    return null;
+  }
+}
+
+export function toApprovalDTO(r: ApprovalRow, action?: ApprovalDTO["action"]): ApprovalDTO {
   return {
+    actionId: r.action_id ?? null,
+    scope: r.scope ?? null,
+    ...(action ? { action } : {}),
+    ...(r.kind === "secret" ? { secret: parseSecretTarget(r.secret_target) } : {}),
     id: r.id,
     agentId: r.agent_id,
     jobId: r.job_id,
@@ -549,6 +576,9 @@ export interface MemoryRow {
   created_at: number;
   updated_at: number;
   on_behalf_of_user_id: string | null;
+  status?: "confirmed" | "tentative";
+  quote?: string | null;
+  source_message_id?: string | null;
 }
 
 export interface SkillRow {
@@ -560,6 +590,9 @@ export interface SkillRow {
   created_by: string;
   created_at: number;
   updated_at: number;
+  kind?: "manual" | "learned";
+  agent_id?: string | null;
+  source_job_id?: string | null;
 }
 
 export interface ConnectorRow {
@@ -573,6 +606,12 @@ export interface ConnectorRow {
   secrets_enc: string | null;
   owner_user_id: string;
   created_at: number;
+  catalog_id?: string | null;
+  auth?: "static" | "oauth";
+  oauth_enc?: string | null;
+  oauth_status?: "pending" | "connected" | "signin_required" | null;
+  oauth_client_id?: string | null;
+  oauth_scope?: string | null;
 }
 
 export function toTaskDTO(r: TaskRow, commentCount: number): TaskDTO {
@@ -663,13 +702,25 @@ export function toMemoryDTO(r: MemoryRow): MemoryDTO {
     source: r.source,
     createdBy: { type: r.created_by_type, id: r.created_by_id },
     onBehalfOfUserId: r.on_behalf_of_user_id ?? null,
+    status: r.status === "tentative" ? "tentative" : "confirmed",
+    quote: r.quote ?? null,
+    sourceMessageId: r.source_message_id ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
 
 export function toSkillDTO(r: SkillRow): SkillDTO {
-  return { id: r.id, name: r.name, description: r.description, body: r.body, updatedAt: r.updated_at, createdBy: r.created_by };
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    body: r.body,
+    updatedAt: r.updated_at,
+    createdBy: r.created_by,
+    kind: r.kind === "learned" ? "learned" : "manual",
+    agentId: r.agent_id ?? null,
+  };
 }
 
 export function toConnectorDTO(r: ConnectorRow, secretNames?: { headers: string[]; env: string[] }): ConnectorDTO {
@@ -684,5 +735,9 @@ export function toConnectorDTO(r: ConnectorRow, secretNames?: { headers: string[
     hasSecrets: r.secrets_enc != null,
     ...(secretNames ? { secretHeaderNames: secretNames.headers, secretEnvNames: secretNames.env } : {}),
     createdAt: r.created_at,
+    catalogId: r.catalog_id ?? null,
+    auth: r.auth === "oauth" ? "oauth" : "static",
+    oauthStatus: r.oauth_status ?? null,
+    oauthClientId: r.oauth_client_id ?? null,
   };
 }

@@ -3,7 +3,7 @@ import { Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import type { SkillDTO } from "@puxibot/shared";
 import { api, errorMessage } from "../../api";
 import { useWorkspace } from "../../store/workspace";
-import { Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, IconButton, InlineError, Input, LoadingState, LockedNote, Modal, SectionTitle, Textarea } from "../../components/ui";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, IconButton, InlineError, Input, LoadingState, LockedNote, Modal, SectionTitle, Textarea } from "../../components/ui";
 import { toast } from "../../components/toast";
 import { Segmented } from "../agents/shared";
 import { Markdown } from "../chat/Markdown";
@@ -86,7 +86,10 @@ export function SkillsSettings() {
                     <Sparkles className="size-4.5" aria-hidden />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="font-medium break-words">{s.name}</p>
+                    <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-medium break-words">
+                      {s.name}
+                      {s.kind === "learned" && <Badge tone="agent">aprendida por {(s.agentId && agents[s.agentId]?.name) || "um agente"}</Badge>}
+                    </p>
                     {s.description && <p className="text-sm text-muted">{s.description}</p>}
                     <p className="mt-0.5 text-xs text-subtle">
                       {users.length === 0 ? "Nenhum agente usa" : `Usada por ${users.map((a) => a.name).join(", ")}`}
@@ -184,6 +187,11 @@ function SkillDialog({ skill, readOnly, onClose, onSaved }: { skill?: SkillDTO; 
     >
       <div className="flex flex-col gap-4">
         {readOnly && <LockedNote>Só quem criou ou um admin muda esta skill.</LockedNote>}
+        {skill?.kind === "learned" && (
+          <p className="rounded-md bg-agent-soft px-3 py-2 text-sm text-agent">
+            Este texto foi escrito pelo próprio agente, depois de terminar um trabalho. É uma lembrança de como ele fez, não uma instrução de alguém.
+          </p>
+        )}
         <Field label="Nome">{(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} maxLength={80} disabled={readOnly} data-autofocus placeholder="Ex.: Revisar pull request" />}</Field>
         <Field label="Para que serve" hint="Uma frase. O agente lê isso para saber quando usar.">
           {(id, d) => <Input id={id} aria-describedby={d} value={description} onChange={(e) => setDescription(e.target.value)} maxLength={300} disabled={readOnly} />}

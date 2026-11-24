@@ -1,0 +1,21 @@
+{
+  "displayName": "Gmail e Google Drive (Composio)",
+  "categories": ["E-mail", "Documentos"],
+  "prompts": [
+    "Conecte meu Gmail e me mostre os e-mails não lidos de hoje.",
+    "Ache no Google Drive a planilha de orçamento e resuma as abas.",
+    "Escreva um rascunho de resposta para o último e-mail do fornecedor e me mostre antes de enviar."
+  ],
+  "requirements": [
+    "Conta no Composio (o plano gratuito basta; o login é feito na tela seguinte).",
+    "Conta do Google com o Gmail e o Drive que o agente vai usar."
+  ],
+  "limitations": [
+    "O Composio fica no meio do caminho: seus e-mails e arquivos passam pelos servidores dele.",
+    "Depois de conectar, peça ao agente para ligar o Gmail ou o Drive: ele devolve um link do Composio para você autorizar o Google.",
+    "O plano gratuito tem limite mensal de chamadas; confira o valor atual em composio.dev/pricing.",
+    "O Composio oferece poucas ferramentas genéricas que executam qualquer ação; por isso até leituras passam pela checagem de ações, e o nível somente leitura pode não mostrar nenhuma ferramenta.",
+    "Não crie uma regra de sempre permitir para a ferramenta de execução do Composio: ela liberaria também enviar e apagar."
+  ],
+  "connection": { "type": "mcp", "server": "composio", "authentication": ["oauth2"] }
+}

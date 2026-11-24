@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { KeyRound, Pencil, Plug, Plus, ShieldCheck, Trash2, X } from "lucide-react";
-import type { ConnectorDTO } from "@puxibot/shared";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import type { CatalogApp, ConnectorDTO } from "@puxibot/shared";
 import { api, errorMessage } from "../../api";
 import type { ConnectorInput } from "../../api/client";
 import { useWorkspace } from "../../store/workspace";
@@ -10,6 +11,8 @@ import { toast } from "../../components/toast";
 import { Segmented } from "../agents/shared";
 import { isAdmin } from "../../lib/actors";
 import { useWsId } from "../shell/hooks";
+import { cn } from "../../lib/cn";
+import { CatalogConnectDialog, CatalogGrid, startConnectorLogin, takeOAuthReturn, useCatalog } from "./CatalogConnect";
 
 export function ConnectorsSettings() {
   const ws = useWsId();
@@ -21,6 +24,36 @@ export function ConnectorsSettings() {
   const [editing, setEditing] = useState<ConnectorDTO | "new" | null>(null);
   const [deleting, setDeleting] = useState<ConnectorDTO | null>(null);
   const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState<CatalogApp | null>(null);
+  const [signingIn, setSigningIn] = useState<string | null>(null);
+  const catalog = useCatalog(ws);
+  const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  // Volta do login no site do serviço: mostra o resultado e limpa o endereço.
+  useEffect(() => {
+    const outcome = params.get("oauth");
+    if (!outcome) return;
+    const reason = params.get("motivo");
+    const back = takeOAuthReturn();
+    setParams({}, { replace: true });
+    if (outcome === "ok") {
+      toast.success("Login feito. O conector está pronto para uso.");
+      if (back) navigate(back, { replace: true });
+    } else {
+      toast.error(new Error(reason || "Não foi possível concluir o login."));
+    }
+  }, [params, setParams, navigate]);
+
+  const signIn = async (c: ConnectorDTO) => {
+    setSigningIn(c.id);
+    try {
+      await startConnectorLogin(ws, c.id);
+    } catch (e) {
+      toast.error(e);
+      setSigningIn(null);
+    }
+  };
 
   const load = () => {
     setError(null);
@@ -51,22 +84,39 @@ export function ConnectorsSettings() {
     }
   };
 
+  const myCatalogIds = new Set((items ?? []).filter((c) => c.ownerUserId === me?.userId && c.catalogId).map((c) => c.catalogId!));
+
   return (
     <>
       <Card>
+        <SectionTitle>Apps com conexão pronta</SectionTitle>
+        <p className="mb-4 text-sm text-muted">
+          Serviços que já vêm configurados: você só entra na sua conta ou cola um token. Consultas rodam direto; qualquer ação que altere algo passa pela
+          checagem de permissão e pode pedir a sua aprovação.
+        </p>
+        {catalog.error ? (
+          <InlineError message={catalog.error} />
+        ) : catalog.apps === null ? (
+          <LoadingState />
+        ) : catalog.apps.length === 0 ? (
+          <p className="text-sm text-subtle">Este hub ainda não tem apps no catálogo.</p>
+        ) : (
+          <CatalogGrid apps={catalog.apps} connected={myCatalogIds} onPick={setPicking} />
+        )}
+      </Card>
+      <Card>
         <SectionTitle
           action={
-            <Button variant="primary" size="sm" icon={<Plus className="size-4" />} onClick={() => setEditing("new")}>
-              Novo conector
+            <Button size="sm" icon={<Plus className="size-4" />} onClick={() => setEditing("new")}>
+              Conectar outro serviço
             </Button>
           }
         >
-          Conectores
+          Conectores do time
         </SectionTitle>
         <p className="mb-4 text-sm text-muted">
-          Servidores MCP que dão aos agentes acesso a GitHub, e-mail e outros serviços. Cada conector tem um dono: só ele concede acesso aos agentes
-          (no perfil do agente, “Ferramentas e acesso”). Chaves e senhas ficam guardadas cifradas no hub e só são entregues ao computador que
-          executa o agente.
+          Cada conector tem um dono: só ele concede acesso aos agentes (no perfil do agente, “Ferramentas e acesso”). Chaves, senhas e logins ficam
+          cifrados no hub e só são entregues ao computador que executa o agente. Para um serviço fora do catálogo, informe o endereço do servidor MCP dele.
         </p>
         {error ? (
           <ErrorState message={error} onRetry={load} />
@@ -93,6 +143,12 @@ export function ConnectorsSettings() {
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium break-words">{c.name}</span>
                         <Badge>{c.transport === "http" ? "HTTP" : "Comando local"}</Badge>
+                        {c.auth === "oauth" &&
+                          (c.oauthStatus === "connected" ? (
+                            <Badge tone="success">Login feito</Badge>
+                          ) : (
+                            <Badge tone="warning">{c.oauthStatus === "signin_required" ? "Login expirou" : "Falta entrar"}</Badge>
+                          ))}
                       </div>
                       <p className="mt-0.5 font-mono text-xs break-all text-muted">{c.transport === "http" ? c.url : [c.command, ...c.args].join(" ")}</p>
                       <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted">
@@ -100,7 +156,9 @@ export function ConnectorsSettings() {
                         Dono: {mine ? "você" : (owner?.name ?? "pessoa removida")}
                       </p>
                       <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
-                        {c.hasSecrets ? (
+                        {c.auth === "oauth" ? (
+                          <span className="text-subtle">Login pelo site do serviço; o hub guarda e renova o acesso.</span>
+                        ) : c.hasSecrets ? (
                           <>
                             <span className="inline-flex items-center gap-1 text-success">
                               <ShieldCheck className="size-3.5" aria-hidden /> Segredos configurados
@@ -117,6 +175,11 @@ export function ConnectorsSettings() {
                       </p>
                       <p className="mt-1 text-xs text-subtle">{users.length ? `Liberado para ${users.map((a) => a.name).join(", ")}` : "Nenhum agente tem acesso ainda"}</p>
                     </div>
+                    {canEdit(c) && c.auth === "oauth" && c.oauthStatus !== "connected" && (
+                      <Button size="sm" variant="primary" loading={signingIn === c.id} onClick={() => void signIn(c)}>
+                        {c.oauthStatus === "signin_required" ? "Entrar de novo" : "Entrar"}
+                      </Button>
+                    )}
                     {canEdit(c) && (
                       <IconButton label={`Editar ${c.name}`} onClick={() => setEditing(c)}>
                         <Pencil className="size-4" />
@@ -140,6 +203,15 @@ export function ConnectorsSettings() {
           connector={editing === "new" ? undefined : editing}
           onClose={() => setEditing(null)}
           onSaved={(c) => setItems((l) => (l ? (l.some((x) => x.id === c.id) ? l.map((x) => (x.id === c.id ? c : x)) : [...l, c]) : [c]))}
+        />
+      )}
+      {picking && (
+        <CatalogConnectDialog
+          ws={ws}
+          app={picking}
+          callbackUrl={catalog.callbackUrl}
+          onClose={() => setPicking(null)}
+          onConnected={(c) => setItems((l) => (l ? [...l.filter((x) => x.id !== c.id), c] : [c]))}
         />
       )}
       <ConfirmDialog
@@ -207,6 +279,9 @@ function ConnectorDialog({ connector, onClose, onSaved }: { connector?: Connecto
   const [command, setCommand] = useState(connector?.command ?? "");
   const [args, setArgs] = useState((connector?.args ?? []).join("\n"));
   // Novo conector: editor aberto. Existente: segredos ficam como estão até a pessoa pedir para trocar.
+  const [auth, setAuth] = useState<"static" | "oauth">(connector?.auth ?? "static");
+  const [clientId, setClientId] = useState(connector?.oauthClientId ?? "");
+  const fromCatalog = !!connector?.catalogId;
   const [replacing, setReplacing] = useState(!connector);
   const [headers, setHeaders] = useState<SecretRow[]>(() => (connector?.secretHeaderNames ?? []).map((key) => ({ key, value: "" })));
   const [env, setEnv] = useState<SecretRow[]>(() => (connector?.secretEnvNames ?? []).map((key) => ({ key, value: "" })));
@@ -230,12 +305,20 @@ function ConnectorDialog({ connector, onClose, onSaved }: { connector?: Connecto
         command: transport === "stdio" ? command.trim() : null,
         args: transport === "stdio" ? args.split(/\n/).map((a) => a.trim()).filter(Boolean) : [],
       };
-      if (replacing) {
+      const oauth = transport === "http" && auth === "oauth";
+      input.auth = oauth ? "oauth" : "static";
+      if (oauth) input.oauthClientId = clientId.trim() || null;
+      if (replacing && !oauth) {
         input.headers = transport === "http" ? toMap(headers) : {};
         input.env = toMap(env);
       }
       const saved = connector ? await api.updateConnector(ws, connector.id, input) : await api.createConnector(ws, input);
       onSaved(saved);
+      if (oauth && saved.oauthStatus !== "connected") {
+        // Falta o login: o navegador vai para o site do serviço e volta para esta tela.
+        await startConnectorLogin(ws, saved.id);
+        return;
+      }
       toast.success(connector ? "Conector salvo." : "Conector criado. Agora libere o acesso no perfil de cada agente.");
       onClose();
     } catch (e) {
@@ -256,7 +339,7 @@ function ConnectorDialog({ connector, onClose, onSaved }: { connector?: Connecto
         <>
           <Button onClick={onClose}>Cancelar</Button>
           <Button variant="primary" loading={busy} onClick={() => void submit()}>
-            {connector ? "Salvar" : "Criar conector"}
+            {transport === "http" && auth === "oauth" && connector?.oauthStatus !== "connected" ? "Salvar e entrar" : connector ? "Salvar" : "Criar conector"}
           </Button>
         </>
       }
@@ -276,7 +359,33 @@ function ConnectorDialog({ connector, onClose, onSaved }: { connector?: Connecto
           />
         </div>
         {transport === "http" ? (
-          <Field label="Endereço do servidor MCP">{(id) => <Input id={id} value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" placeholder="https://…/mcp" spellCheck={false} />}</Field>
+          <>
+            <Field label="Endereço do servidor MCP" hint={fromCatalog ? "Vem do catálogo e não pode ser mudado." : undefined}>
+              {(id, d) => <Input id={id} aria-describedby={d} value={url} onChange={(e) => setUrl(e.target.value)} inputMode="url" placeholder="https://…/mcp" spellCheck={false} disabled={fromCatalog} />}
+            </Field>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium">Como o serviço identifica você</span>
+              <Segmented
+                label="Autenticação"
+                value={auth}
+                onChange={setAuth}
+                options={[
+                  { id: "static", label: "Token ou chave" },
+                  { id: "oauth", label: "Login pelo site" },
+                ]}
+              />
+              {auth === "oauth" && (
+                <p className="text-xs text-muted">
+                  Você entra na sua conta no site do serviço e o hub guarda e renova o acesso. Só funciona com endereços públicos por HTTPS e com serviços que seguem o login padrão do MCP.
+                </p>
+              )}
+            </div>
+            {auth === "oauth" && (
+              <Field label="ID do app (opcional)" hint="Só se o serviço exigir um app registrado por você. Deixe vazio para o registro automático.">
+                {(id, d) => <Input id={id} aria-describedby={d} value={clientId} onChange={(e) => setClientId(e.target.value)} spellCheck={false} autoComplete="off" className="font-mono" />}
+              </Field>
+            )}
+          </>
         ) : (
           <>
             <Field label="Comando" hint="Roda no computador de quem executa o agente.">
@@ -288,7 +397,7 @@ function ConnectorDialog({ connector, onClose, onSaved }: { connector?: Connecto
           </>
         )}
 
-        <div className="rounded-md border border-line p-3">
+        <div className={cn("rounded-md border border-line p-3", transport === "http" && auth === "oauth" && "hidden")}>
           <p className="flex items-center gap-1.5 text-sm font-medium">
             <KeyRound className="size-4 text-muted" aria-hidden /> Segredos
           </p>

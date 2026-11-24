@@ -1,0 +1,10 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "composio",
+  "version": "1.0.0",
+  "description": "Gmail, Google Drive e outros apps do Google pela conta gratuita do Composio.",
+  "homepage": "https://composio.dev",
+  "license": "MIT",
+  "extensions": { "io.puxibot": { "app": "./io.puxibot/app.json" } },
+  "author": { "name": "Puxibot" }
+}

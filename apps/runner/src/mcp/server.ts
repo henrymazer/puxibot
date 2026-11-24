@@ -2,10 +2,12 @@
  * `puxibot mcp`: servidor MCP por stdio com as ferramentas nativas do Puxibot.
  * Iniciado pela CLI de IA durante um job (não pela pessoa). Lê do ambiente:
  *   PUXIBOT_HUB_URL, PUXIBOT_JOB_TOKEN (obrigatórios)
- *   PUXIBOT_TOOL_PERMS (JSON), PUXIBOT_AGENT_IS_ASSISTANT ("1"/"0"), PUXIBOT_CHANNEL_ID
+ *   PUXIBOT_TOOL_PERMS (JSON), PUXIBOT_AGENT_IS_ASSISTANT ("1"/"0"), PUXIBOT_AGENT_KIND ("builder" ou vazio),
+ *   PUXIBOT_CHANNEL_ID
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { wrapUntrusted } from "@puxibot/shared";
 import { redact } from "../log.js";
 import { HubApi, HubApiError } from "./hubApi.js";
 import { TOOLS, toolAllowed, type ToolContext, type ToolDef } from "./tools.js";
@@ -71,7 +73,7 @@ export function createPuxibotMcpServer(env: NodeJS.ProcessEnv = process.env, cwd
   );
 
   for (const t of TOOLS) {
-    if (!toolAllowed(t, perms, isAssistant)) continue;
+    if (!toolAllowed(t, perms, isAssistant, env.PUXIBOT_AGENT_KIND || null)) continue;
     server.registerTool(
       t.name,
       { title: t.title, description: t.description, inputSchema: t.input },
@@ -80,6 +82,8 @@ export function createPuxibotMcpServer(env: NodeJS.ProcessEnv = process.env, cwd
           const result = await t.run(args ?? {}, ctx);
           let text = result === null || result === undefined ? "ok" : typeof result === "string" ? result : JSON.stringify(result, null, 2);
           if (text.length > MAX_RESULT_CHARS) text = text.slice(0, MAX_RESULT_CHARS) + "\n…(resultado cortado)";
+          // Texto de outras pessoas e de fora chega marcado como dado (prompt.ts explica o bloco ao agente).
+          if (t.untrusted) text = wrapUntrusted(t.untrusted, text);
           return { content: [{ type: "text" as const, text }] };
         } catch (e) {
           return { content: [{ type: "text" as const, text: errorMessageFor(t, e) }], isError: true };

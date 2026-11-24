@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pause, Play, Trash2, TriangleAlert } from "lucide-react";
-import { CLIS, type AgentDTO, type Cli } from "@puxibot/shared";
-import { api } from "../../api";
+import { CLIS, type AgentDTO, type Cli, type RoutineDTO } from "@puxibot/shared";
+import { api, errorMessage } from "../../api";
 import type { AgentPatch } from "../../api/client";
 import { useWorkspace } from "../../store/workspace";
 import { CLI_LABEL, canEditAgent, canPauseAgent, isAdmin, isOthersAssistant } from "../../lib/actors";
-import { formatNumber } from "../../lib/format";
+import { formatDateTime, formatNumber } from "../../lib/format";
+import { describeCron } from "../../lib/cron";
 import { cn } from "../../lib/cn";
 import { AgentAvatar, PersonAvatar } from "../../components/Avatar";
 import { Button, Card, ConfirmDialog, Field, InlineError, Input, LockedNote, Select, Toggle } from "../../components/ui";
@@ -340,6 +341,8 @@ export function GovernanceTab({ agent, onDeleted }: { agent: AgentDTO; onDeleted
         {editLock && <LockedNote>{editLock}</LockedNote>}
       </Card>
 
+      {agent.systemKind !== "builder" && <ProactiveCard agent={agent} />}
+
       <Card>
         <Heading title="CLI e modelo preferidos" text="Usados quando o computador que executa tiver essa CLI. Senão, vale a que estiver disponível." />
         <div className="grid gap-3 sm:grid-cols-2">
@@ -379,6 +382,110 @@ export function GovernanceTab({ agent, onDeleted }: { agent: AgentDTO; onDeleted
         onConfirm={() => void remove()}
       />
     </div>
+  );
+}
+
+const PREPARE_PRESETS: { cron: string; label: string }[] = [
+  { cron: "0 8-18/2 * * 1-5", label: "A cada 2 horas, dias úteis (8h–18h)" },
+  { cron: "0 8 * * 1-5", label: "Uma vez por dia às 8h" },
+  { cron: "0 8-18 * * 1-5", label: "A cada hora, dias úteis" },
+];
+
+function browserTimezone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Preparação automática: o agente olha as fontes sozinho, rascunha e só avisa quando há algo concreto. */
+function ProactiveCard({ agent }: { agent: AgentDTO }) {
+  const ws = useWsId();
+  const me = useWorkspace((s) => s.me);
+  const members = useWorkspace((s) => s.members);
+  /** undefined = carregando; null = desligada. */
+  const [routine, setRoutine] = useState<RoutineDTO | null | undefined>(undefined);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setRoutine(undefined);
+    setLoadError(null);
+    api
+      .listRoutines(ws, { agentId: agent.id })
+      .then((l) => alive && setRoutine(l.find((r) => r.kind === "prepare" && r.enabled) ?? null))
+      .catch((e) => alive && setLoadError(errorMessage(e)));
+    return () => {
+      alive = false;
+    };
+  }, [ws, agent.id]);
+
+  const on = !!routine;
+  const isOwner = agent.ownerUserId === me?.userId;
+  /** Só o responsável liga; um admin pode desligar. */
+  const canToggle = isOwner || (on && isAdmin(me?.role));
+  const ownerName = members[agent.ownerUserId]?.name ?? "outra pessoa";
+
+  const apply = async (input: { enabled: boolean; cron?: string; timezone?: string }) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setRoutine(await api.setProactive(ws, agent.id, input));
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const known = routine ? PREPARE_PRESETS.some((p) => p.cron === routine.cron) : true;
+
+  return (
+    <Card>
+      <Heading
+        title="Preparação automática"
+        text="O agente olha sozinho as fontes conectadas, prepara rascunhos e só manda mensagem ao responsável quando há algo concreto em aberto. Neste modo ele nunca muda nada em um serviço conectado: só lê e rascunha. Os rascunhos ficam na pasta “Rascunhos” do Drive."
+      />
+      {loadError ? (
+        <InlineError message={loadError} />
+      ) : routine === undefined ? (
+        <p className="text-sm text-muted">Carregando…</p>
+      ) : (
+        <>
+          <Toggle
+            label="Preparar sozinho"
+            description={on ? "Ligada." : "Desligada: o agente só trabalha quando alguém pede ou em uma rotina."}
+            checked={on}
+            onChange={(v) => void apply(v ? { enabled: true, cron: PREPARE_PRESETS[0]!.cron, timezone: browserTimezone() } : { enabled: false })}
+            disabled={!canToggle || busy}
+            disabledReason={canToggle ? undefined : `Só o responsável (${ownerName}) liga a preparação automática.`}
+          />
+          {on && !isOwner && canToggle && <LockedNote>Como admin, você pode desligar. Só o responsável liga de novo e muda o horário.</LockedNote>}
+          {routine && (
+            <div className="mt-3 border-t border-line pt-3">
+              <Field label="Quando o agente olha" hint={`Horário de ${routine.timezone}.${routine.nextRunAt ? ` Próxima vez: ${formatDateTime(routine.nextRunAt)}.` : ""}`}>
+                {(id, d) => (
+                  <Select id={id} aria-describedby={d} value={routine.cron} onChange={(e) => void apply({ enabled: true, cron: e.target.value, timezone: routine.timezone })} disabled={!isOwner || busy}>
+                    {!known && <option value={routine.cron}>{describeCron(routine.cron)}</option>}
+                    {PREPARE_PRESETS.map((p) => (
+                      <option key={p.cron} value={p.cron}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
+            </div>
+          )}
+        </>
+      )}
+      <div className="mt-2">
+        <InlineError message={error} />
+      </div>
+    </Card>
   );
 }
 

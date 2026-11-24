@@ -8,6 +8,7 @@ import { HubConnection } from "./connection.js";
 import { detectIsolation, isolationWarning } from "./isolation.js";
 import { JobManager } from "./jobs.js";
 import { createLogger, type Logger } from "./log.js";
+import type { WhatsAppBridge } from "./whatsapp/bridge.js";
 
 export interface StartOptions {
   isolation?: IsolationMode;
@@ -68,6 +69,7 @@ export async function startRunner(opts: StartOptions = {}): Promise<RunningRunne
   let runnerId = cfg.runnerId ?? null;
   // eslint-disable-next-line prefer-const
   let jobs: JobManager;
+  let whatsapp: WhatsAppBridge | null = null;
   const connection = new HubConnection({
     hubUrl: cfg.hubUrl,
     workspaceId: cfg.workspaceId,
@@ -93,6 +95,7 @@ export async function startRunner(opts: StartOptions = {}): Promise<RunningRunne
     onMessage: (msg) => {
       if (msg.type === "job.assign") jobs.handleAssign(msg.assignment);
       else if (msg.type === "job.cancel") jobs.handleCancel(msg.jobId);
+      else if (msg.type === "chat.send") whatsapp?.deliver(msg);
     },
     onFatal: () => {
       void stop("token recusado").then(() => {
@@ -115,6 +118,7 @@ export async function startRunner(opts: StartOptions = {}): Promise<RunningRunne
     if (stopping) return stopping;
     stopping = (async () => {
       if (jobs.running) log.info(`devolvendo ${jobs.running} job(s) em andamento ao hub...`);
+      await whatsapp?.stop().catch(() => {});
       await jobs.shutdown(reason);
       await connection.flush();
       await connection.stop();
@@ -140,5 +144,14 @@ export async function startRunner(opts: StartOptions = {}): Promise<RunningRunne
 
   log.info(`runner "${name}" conectando a ${cfg.hubUrl} (workspace ${cfg.workspaceId}, isolamento ${isolation}, capacidade ${capacity})`);
   connection.start();
+  if (cfg.whatsapp?.enabled) {
+    // Opcional e à parte: um problema no WhatsApp nunca derruba o runner.
+    try {
+      const { startWhatsAppBridge } = await import("./whatsapp/bridge.js");
+      whatsapp = await startWhatsAppBridge(cfg, (m) => connection.send(m), log);
+    } catch (e) {
+      log.warn(`whatsapp: não iniciou (${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
   return { connection, jobs, stop };
 }

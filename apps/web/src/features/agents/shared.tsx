@@ -16,7 +16,9 @@ export function useSaveAgent(ws: string, agent: AgentDTO) {
       setError(null);
       try {
         const updated = await api.updateAgent(ws, agent.id, patch);
-        useWorkspace.getState().upsertAgent(updated && updated.id ? updated : { ...agent, ...patch });
+        // `toolPerms` no pedido traz só as chaves que mudaram: junta com as atuais.
+        const merged = { ...agent, ...patch, ...(patch.toolPerms ? { toolPerms: { ...agent.toolPerms, ...patch.toolPerms } } : {}) };
+        useWorkspace.getState().upsertAgent(updated && updated.id ? updated : merged);
         if (okMessage) toast.success(okMessage);
         return true;
       } catch (err) {

@@ -8,7 +8,7 @@ import { isAdmin } from "../http/auth";
 import type { WsEnv } from "../http/types";
 import { requireAgentRow } from "../domain/agents";
 import { requireVisibleChannel } from "../domain/channels";
-import { assertRoutineChannel, assertValidSchedule, computeNextRun, executeRoutine, getRoutine, insertRoutine } from "../domain/routines";
+import { assertRoutineChannel, assertValidSchedule, computeNextRun, executeRoutine, getRoutine, insertRoutine, setProactive } from "../domain/routines";
 import { toJobDTO, toRoutineDTO, type AgentRow, type RoutineRow } from "../domain/rows";
 
 /** /api/workspaces/:ws/routines — escrita: responsável do agente ou admin. */
@@ -32,6 +32,21 @@ async function requireManagedRoutine(c: Context<WsEnv>): Promise<{ routine: Rout
   if (agent.is_assistant === 1 && agent.owner_user_id !== c.get("userId") && !isAdmin(c)) throw notFound("Rotina não encontrada.");
   return { routine, agent };
 }
+
+/**
+ * Preparação automática de um agente. Só o responsável liga: os avisos chegam na DM dele e o agente
+ * passa a ler as fontes conectadas por conta própria.
+ */
+routineRoutes.put("/agents/:id/proactive", async (c) => {
+  const agent = await requireAgentRow(c.env.DB, c.get("wsId"), c.req.param("id")!);
+  const body = await readBody(c, z.object({ enabled: z.boolean(), cron: z.string().min(1).max(120).optional(), timezone: z.string().min(1).max(64).optional() }));
+  if (agent.owner_user_id !== c.get("userId") && !(isAdmin(c) && !body.enabled)) {
+    throw forbidden("Só o responsável pelo agente liga a preparação automática (admins podem desligar).");
+  }
+  if (agent.system_kind === "builder") throw forbidden("O agente criador não tem preparação automática.");
+  const row = await setProactive(c.get("hub"), agent, body);
+  return c.json({ routine: row ? toRoutineDTO(row) : null });
+});
 
 routineRoutes.get("/routines", async (c) => {
   const agentId = c.req.query("agentId");

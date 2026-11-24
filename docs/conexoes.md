@@ -82,4 +82,39 @@ Em **Configurações › Canais de conversa**, cada pessoa liga a própria conta
 - Aprovações, logins e conexões continuam na interface, nunca no aplicativo de conversa.
 - Avisos de falha não levam o detalhe do erro para fora.
 
-A configuração do bot do Telegram e da API do WhatsApp está em [deploy-cloudflare.md](deploy-cloudflare.md#telegram). O WhatsApp usa a API oficial da Meta (Cloud API) e não foi testado com uma conta real.
+A configuração do bot do Telegram e da API do WhatsApp está em [deploy-cloudflare.md](deploy-cloudflare.md#telegram). Esse caminho do WhatsApp usa a API oficial da Meta (Cloud API) e não foi testado com uma conta real.
+
+### WhatsApp pelo seu computador (QR code)
+
+Para uso pessoal existe um segundo caminho, igual ao do [Nod](https://github.com/n8n-io/nod): o WhatsApp é vinculado por QR code no computador onde o seu runner roda, sem a API oficial e sem configurar nada no hub.
+
+```bash
+puxibot whatsapp conectar --agente assistente
+```
+
+O comando mostra o aviso de risco, instala a biblioteca na primeira vez e desenha o QR code no terminal. No celular: WhatsApp › Configurações › Dispositivos conectados › Conectar dispositivo. Depois reinicie o `puxibot start`.
+
+Há dois modos:
+
+| Modo | Como ligar | Por onde você escreve |
+|---|---|---|
+| Seu próprio número (padrão) | Leia o QR com o seu celular | Na conversa "Mensagem para você mesmo" |
+| Número separado só para o agente | `--numero-separado --meu-numero 5511999990000`, lendo o QR com o celular do outro número | Do seu número para o número do agente |
+
+O que o runner faz e não faz:
+
+- **Só mensagens suas chegam ao agente.** Grupos, status, canais, outras conversas e tudo que é anterior ao vínculo são ignorados antes de virar pedido.
+- **O agente só escreve para você.** Não há ferramenta para ele mandar WhatsApp a outra pessoa.
+- **Só texto.** Áudio, foto e arquivo recebem um aviso curto.
+- **Precisa do computador ligado** com o runner rodando. Com ele desligado, a mensagem espera e a resposta fica na conversa da interface.
+- **As chaves do aparelho ficam em `~/.puxibot/whatsapp/`**, em arquivos que só o seu usuário lê. Essa pasta fica escondida dos agentes em todos os modos de isolamento. Elas não são cifradas: quem tem acesso ao seu usuário no computador tem acesso ao vínculo.
+- **Quem você é vem do runner**, não do número: o hub recebe a mensagem pela conexão autenticada do seu runner e confere se você pode falar com o agente escolhido.
+- `puxibot whatsapp desconectar` avisa o WhatsApp e apaga as chaves; `puxibot whatsapp status` mostra o estado.
+
+Riscos, os mesmos que o Nod avisa:
+
+- Usa o Baileys, um cliente **não oficial**. Há um risco pequeno de o WhatsApp restringir ou banir a conta, e uma atualização dele pode quebrar a conexão por um tempo. Confira os termos do WhatsApp antes.
+- É para poucas mensagens entre você e o seu agente. Para atender clientes ou enviar em volume, use a API oficial.
+- A biblioteca é baixada do npm numa versão fixa (`@whiskeysockets/baileys@7.0.0-rc14`, a mesma do Nod), sem rodar scripts de instalação; as dependências dela seguem as faixas de versão que ela declara.
+
+Situação: testado com um soquete simulado (regras de quem pode escrever, reconexão, envio) e, com a biblioteca real, até o QR code aparecer no terminal. Vincular uma conta e trocar mensagens de verdade não foi testado.

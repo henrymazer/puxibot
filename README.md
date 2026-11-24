@@ -69,7 +69,7 @@ Versão 0.1, em desenvolvimento. Leia isto antes de colocar no ar.
 **Testado só com serviços simulados** (testes automáticos do hub e do runner):
 
 - login OAuth de conectores pelo hub (descoberta, registro de cliente, PKCE, renovação);
-- conversa com um agente por Telegram e por WhatsApp;
+- conversa com um agente por Telegram e por WhatsApp (API oficial, e por QR code no computador da pessoa; neste último a biblioteca real foi exercitada só até mostrar o QR code);
 - o cofre de senhas.
 
 **Testado numa página local, fora do isolamento**: o navegador dos agentes com um Chromium de verdade (navegar, ler a página, entrar com um login do cofre sem a senha aparecer em nenhum resultado, e a recusa quando a página é de outro site).

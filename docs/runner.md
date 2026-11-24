@@ -147,6 +147,7 @@ Um conector (servidor MCP cadastrado em **Configurações › Conectores**) só 
 | `puxibot status` | Mostra hub, workspace, isolamento padrão e se o runner está rodando. |
 | `puxibot logout` | Remove este runner do hub e apaga o token local. |
 | `puxibot doctor` | Verifica CLIs, logins e isolamento. `--json` para saída em JSON. |
+| `puxibot whatsapp conectar --agente <handle>` | Vincula o seu WhatsApp por QR code para conversar com um agente (uso pessoal, cliente não oficial). Veja [conexoes.md](conexoes.md#whatsapp-pelo-seu-computador-qr-code). `desconectar` e `status` completam. |
 | `puxibot service` | Imprime (sem instalar) uma unidade do systemd e um plist do launchd para manter o runner ligado. |
 | `puxibot mcp` | Servidor MCP das ferramentas do Puxibot. Você não roda isto: a CLI de IA o inicia durante cada trabalho. |
 

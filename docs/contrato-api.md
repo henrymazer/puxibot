@@ -163,6 +163,8 @@ Cada membro tem um agente com `isAssistant = 1`, criado quando entra no workspac
 - **`job.failed`**: grava erro; publica mensagem `system` na conversa ("Marcos parou com um erro: …") e notifica o responsável.
 - **`job.rejected` de job já aceito**: quando o runner está encerrando (Ctrl+C/SIGTERM), ele mata o processo e manda `job.rejected` com `reason` começando por `runner_shutdown`; o hub devolve o job para a fila como na expiração, sem esperar o lease.
 - **`job.cancel`**: o runner mata o processo (e os filhos) e não manda mais nenhuma mensagem sobre o job.
+- **`chat.inbound`** (runner → hub) `{ provider: 'whatsapp', agent, text }`: a dona do runner escreveu pelo WhatsApp vinculado por QR code. O hub identifica a pessoa pela conexão do runner, confere o agente (existe, não é o criador, ela pode falar com ele) e abre o trabalho na DM, com `reply_via = 'whatsapp'` e `reply_to = 'runner:<userId>'`. Recusas voltam como `chat.send`.
+- **`chat.send`** (hub → runner) `{ provider: 'whatsapp', text }`: texto para o runner entregar à dona. Vai para todos os runners dela; os que não têm o WhatsApp ligado ignoram.
 - **Reentrega**: se o hub reenviar `job.assign` de um job que o runner ainda executa (por exemplo, após uma reconexão), o runner responde `job.accepted` de novo e continua; ao reconectar, ele manda `job.heartbeat` de todos os jobs em andamento logo depois do `welcome`, e as mensagens `job.accepted/rejected/event/done/failed` produzidas durante a queda.
 - **Token revogado**: o hub pode fechar o WebSocket do runner com código 4001 (ou recusar o upgrade com 401/403); o runner para de reconectar e pede um novo `puxibot login`.
 

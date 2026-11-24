@@ -747,7 +747,15 @@ export type RunnerToHub =
       outputTokens: number;
       model: string | null;
     }
-  | { type: "job.failed"; jobId: string; errorCode: JobErrorCode; error: string };
+  | { type: "job.failed"; jobId: string; errorCode: JobErrorCode; error: string }
+  /**
+   * WhatsApp ligado por QR code neste computador: a pessoa dona do runner escreveu para o agente.
+   * O runner só repassa mensagens da própria dona; o hub confere o agente e o acesso.
+   */
+  | { type: "chat.inbound"; provider: "whatsapp"; agent: string; text: string };
+
+/** Marca em `jobs.reply_to`: a resposta volta pelo runner da pessoa (WhatsApp por QR code), não pela API oficial. */
+export const CHAT_REPLY_RUNNER_PREFIX = "runner:";
 
 /** `POST /api/runner/pair/start` → resposta. */
 export interface RunnerPairStartResponse {
@@ -770,6 +778,8 @@ export type HubToRunner =
   | { type: "pong" }
   | { type: "job.assign"; assignment: JobAssignment }
   | { type: "job.cancel"; jobId: string }
+  /** Texto para o runner entregar à dona pelo WhatsApp ligado por QR code. */
+  | { type: "chat.send"; provider: "whatsapp"; text: string }
   | { type: "error"; code: string; message: string };
 
 // ---------- Validação de entradas mais usadas ----------

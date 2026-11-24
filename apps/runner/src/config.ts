@@ -69,6 +69,12 @@ export interface RunnerConfig {
    * A aprovação continua valendo na tela enquanto o trabalho não terminar.
    */
   approvals?: { waitSeconds?: number };
+  /**
+   * WhatsApp vinculado por QR code neste computador (`puxibot whatsapp conectar`), para você conversar
+   * com um agente seu. `mode`: "self-chat" (seu próprio número) ou "bot" (um número separado, que só
+   * aceita mensagens de `allowedNumber`). As chaves ficam em `whatsapp/session/`, fora deste arquivo.
+   */
+  whatsapp?: { enabled?: boolean; mode?: "self-chat" | "bot"; allowedNumber?: string; agent?: string };
   container?: {
     runtime?: "docker" | "podman";
     /** Imagem própria; padrão: construída a partir de docker/Dockerfile. */

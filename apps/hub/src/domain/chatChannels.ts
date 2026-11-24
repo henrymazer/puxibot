@@ -9,12 +9,13 @@
  * WhatsApp usa a API oficial (Cloud API, com webhook assinado). [SUPOSIÇÃO: escrito a partir da
  * documentação da Meta; não foi testado com uma conta real.]
  */
-import type { ChatLinkDTO } from "@puxibot/shared";
+import { CHAT_REPLY_RUNNER_PREFIX, type ChatLinkDTO } from "@puxibot/shared";
 import { publicUrl, type AppEnv } from "../env";
 import { bytesToHex, randomCode, timingSafeEqual } from "../lib/crypto";
-import { first, newId, run } from "../lib/db";
+import { all, first, newId, run } from "../lib/db";
 import { hit } from "../lib/rateLimit";
 import { canTalkTo, getAgentRow } from "./agents";
+import type { AgentRow } from "./rows";
 import { findOrCreateDm } from "./channels";
 import { workerCtx, type HubCtx } from "./context";
 import { requestAgentWork } from "./jobs";
@@ -198,16 +199,40 @@ export async function handleInbound(env: AppEnv, provider: ChatProvider, externa
     await run(db, "DELETE FROM chat_links WHERE id = ?", link.id);
     return "Este vínculo não vale mais (o agente ou o seu acesso mudou). Gere um novo código no Puxibot.";
   }
-  const ctx: HubCtx = workerCtx(env, link.workspace_id);
-  const { channel } = await findOrCreateDm(db, link.workspace_id, { type: "user", id: link.user_id }, { type: "agent", id: agent.id }, link.user_id);
-  const body = text.slice(0, MAX_INBOUND_CHARS);
-  const message = await insertMessage(ctx, { channel, author: { type: "user", id: link.user_id }, body });
-  const job = await requestAgentWork(ctx, { agent, userId: link.user_id, channel, prompt: body, triggerMessageId: message.id, threadRootId: null, replyVia: provider, replyTo: externalId });
+  return startChatWork(workerCtx(env, link.workspace_id), { userId: link.user_id, agent, provider, replyTo: externalId, text });
+}
+
+/** A mensagem vira uma mensagem da pessoa na DM com o agente e abre o trabalho, com a resposta marcada para voltar pelo canal. */
+async function startChatWork(ctx: HubCtx, input: { userId: string; agent: AgentRow; provider: ChatProvider; replyTo: string; text: string }): Promise<string | null> {
+  const db = ctx.env.DB;
+  const { agent, userId } = input;
+  const { channel } = await findOrCreateDm(db, ctx.wsId, { type: "user", id: userId }, { type: "agent", id: agent.id }, userId);
+  const body = input.text.slice(0, MAX_INBOUND_CHARS);
+  const message = await insertMessage(ctx, { channel, author: { type: "user", id: userId }, body });
+  const job = await requestAgentWork(ctx, { agent, userId, channel, prompt: body, triggerMessageId: message.id, threadRootId: null, replyVia: input.provider, replyTo: input.replyTo });
   if (!job) {
-    const base = publicUrl(env);
+    const base = publicUrl(ctx.env);
     return `${agent.name} não pode responder agora (pausado, sem orçamento ou sem acesso). ${base ? `Veja em ${base}` : "Veja no Puxibot."}`;
   }
   return null;
+}
+
+/**
+ * WhatsApp ligado por QR code no computador da pessoa (como no Nod): o runner dela repassa o que ela
+ * escreveu. A identidade vem da conexão do runner (o token dele), não de um número; o runner só repassa
+ * mensagens da própria dona. O agente é escolhido na configuração do runner e conferido aqui.
+ */
+export async function handleRunnerInbound(ctx: HubCtx, userId: string, agentHandle: string, rawText: string): Promise<string | null> {
+  const db = ctx.env.DB;
+  const text = typeof rawText === "string" ? rawText.trim() : "";
+  if (!text) return null;
+  const handle = String(agentHandle ?? "").trim().replace(/^@/, "").toLowerCase().slice(0, 64);
+  const [agent] = await all<AgentRow>(db, "SELECT * FROM agents WHERE workspace_id = ? AND handle = ?", ctx.wsId, handle);
+  if (!agent) return `Não achei o agente @${handle || "?"} neste workspace. Confira com \`puxibot whatsapp status\` e conecte de novo.`;
+  if (agent.system_kind === "builder") return "O agente criador conversa só pela interface.";
+  if (!(await getMember(db, ctx.wsId, userId)) || !(await canTalkTo(db, agent, userId))) return `Você não tem permissão para falar com ${agent.name}.`;
+  if ((await hit(db, `chat:runner:${userId}`, 60 * 60_000)).count > INBOUND_PER_HOUR) return "Muitas mensagens em pouco tempo. Tente de novo daqui a pouco.";
+  return startChatWork(ctx, { userId, agent, provider: "whatsapp", replyTo: `${CHAT_REPLY_RUNNER_PREFIX}${userId}`, text });
 }
 
 // ---------- WhatsApp: assinatura do webhook ----------

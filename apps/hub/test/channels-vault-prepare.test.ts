@@ -148,6 +148,46 @@ describe("conversa com o agente pelo WhatsApp (Cloud API)", () => {
   });
 });
 
+describe("WhatsApp por QR code no computador da pessoa", () => {
+  type Send = Extract<HubToRunner, { type: "chat.send" }>;
+
+  it("o runner repassa a mensagem da dona, o pedido nasce na DM e a resposta volta pelo runner dela", async () => {
+    const { owner, base, agent, runner } = await setup();
+    runner.sock.send({ type: "chat.inbound", provider: "whatsapp", agent: `@${agent.handle.toUpperCase()}`, text: "Qual o status do projeto?" });
+    const assign = await runner.sock.waitFor<Assign>((m) => m.type === "job.assign");
+    expect(assign.assignment).toMatchObject({ prompt: "Qual o status do projeto?", replyVia: "whatsapp", requestedBy: { userId: owner.userId } });
+    const msgs = (await owner.get<{ items: MessageDTO[] }>(`${base}/channels/${assign.assignment.channel!.id}/messages`)).body.items;
+    expect(msgs.at(-1)).toMatchObject({ body: "Qual o status do projeto?", author: { type: "user", id: owner.userId } });
+    runner.sock.send({ type: "job.accepted", jobId: assign.assignment.jobId, cli: "claude", model: "haiku" });
+    runner.sock.send({ type: "job.done", jobId: assign.assignment.jobId, text: "Está em dia.", inputTokens: 1, outputTokens: 1, model: "haiku" });
+    const reply = await runner.sock.waitFor<Send>((m) => m.type === "chat.send");
+    expect(reply).toMatchObject({ provider: "whatsapp", text: "Está em dia." });
+    // Nada saiu pela API oficial.
+    expect(sent).toEqual([]);
+    expect(agent.id).toBe(assign.assignment.agent.id);
+  });
+
+  it("agente desconhecido, agente criador e agente sem acesso recebem uma recusa e nenhum trabalho", async () => {
+    const { owner, ws, base, runner } = await setup();
+    const refusal = async (agentHandle: string) => {
+      const before = runner.sock.received.length;
+      runner.sock.send({ type: "chat.inbound", provider: "whatsapp", agent: agentHandle, text: "oi" });
+      return (await runner.sock.waitFor<Send>((m) => m.type === "chat.send" && runner.sock.received.indexOf(m) >= before)).text;
+    };
+    expect(await refusal("ninguem")).toMatch(/Não achei o agente @ninguem/);
+    // Agente restrito ao responsável: o runner de outra pessoa do time não fala com ele.
+    const priv = await createAgentFor(owner, ws.id, "Privado");
+    expect((await owner.patch<AgentDTO>(`${base}/agents/${priv.id}`, { accessMode: "owner" })).body.accessMode).toBe("owner");
+    const invite = (await owner.post<{ code: string }>(`${base}/invites`, {})).body.code;
+    const other = await signup("Bia Alves", invite);
+    const otherRunner = await connectRunner(await createRunnerToken(other, ws.id), ws.id, { capacity: 1 });
+    otherRunner.sock.send({ type: "chat.inbound", provider: "whatsapp", agent: priv.handle, text: "oi" });
+    expect((await otherRunner.sock.waitFor<Send>((m) => m.type === "chat.send")).text).toMatch(/não tem permissão para falar com Privado/);
+    expect(runner.sock.received.some((m) => m.type === "job.assign")).toBe(false);
+    expect(otherRunner.sock.received.some((m) => m.type === "job.assign")).toBe(false);
+  });
+});
+
 describe("cofre de logins", () => {
   it("guarda cifrado, mostra só à dona, normaliza o site e exige a senha para trocar de site", async () => {
     const { owner, base } = await setup();

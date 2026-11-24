@@ -5,6 +5,7 @@ import {
   CHILD_JOB_EXTRA_CAPACITY,
   JOB_LEASE_MS,
   JOB_MAX_ATTEMPTS,
+  CHAT_REPLY_RUNNER_PREFIX,
   RUNNER_PROTOCOL_VERSION,
   type ClientCommand,
   type ClientEvent,
@@ -27,7 +28,7 @@ import { addTaskComment } from "../domain/tasks";
 import { sanitizeCards } from "../domain/cards";
 import { links, notify } from "../domain/notify";
 import { closeJobActions } from "../domain/trust";
-import { deliverChatReply } from "../domain/chatChannels";
+import { deliverChatReply, handleRunnerInbound } from "../domain/chatChannels";
 import { toJobEventDTO, toRunnerDTO, type AgentRow, type JobRow, type RunnerRow } from "../domain/rows";
 
 /** Cabeçalhos que o Worker define ao repassar um upgrade de WebSocket já autenticado. */
@@ -161,6 +162,21 @@ export class WorkspaceHub extends DurableObject<AppEnv> {
     } catch {
       // conexão fechando; o close handler cuida do resto
     }
+  }
+
+  /**
+   * Resposta de um pedido que chegou por um canal externo. WhatsApp por QR code volta pelos runners da
+   * própria pessoa (o que não tiver o WhatsApp ligado ignora); os outros canais, pela API do serviço.
+   * Com o computador desligado a resposta fica só na conversa da interface.
+   */
+  private async replyToChat(job: JobRow, text: string): Promise<void> {
+    if (job.reply_to?.startsWith(CHAT_REPLY_RUNNER_PREFIX)) {
+      if (!text.trim()) return;
+      const userId = job.reply_to.slice(CHAT_REPLY_RUNNER_PREFIX.length);
+      for (const ws of this.ctx.getWebSockets(`ru:${userId}`)) this.send(ws, { type: "chat.send", provider: "whatsapp", text: text.slice(0, 30_000) });
+      return;
+    }
+    await deliverChatReply(this.env, job, text);
   }
 
   private sendToRunner(runnerId: string, msg: HubToRunner): void {
@@ -424,6 +440,15 @@ export class WorkspaceHub extends DurableObject<AppEnv> {
     }
     const runnerId = att.runnerId;
     switch (msg.type) {
+      case "chat.inbound": {
+        if (msg.provider !== "whatsapp" || typeof msg.text !== "string" || typeof msg.agent !== "string") return;
+        const reply = await handleRunnerInbound(this.domainCtx(wsId), att.userId, msg.agent, msg.text).catch((err) => {
+          console.warn(JSON.stringify({ msg: "chat inbound failed", error: String(err) }));
+          return "Não consegui entregar sua mensagem agora. Tente de novo daqui a pouco.";
+        });
+        if (reply) this.send(ws, { type: "chat.send", provider: "whatsapp", text: reply });
+        return;
+      }
       case "job.accepted":
         return this.onAccepted(wsId, runnerId, msg.jobId, msg.cli, msg.model);
       case "job.rejected": {
@@ -686,7 +711,7 @@ export class WorkspaceHub extends DurableObject<AppEnv> {
     }
     await closeJobActions(ctx, job.id);
     // Pedido que chegou por Telegram ou WhatsApp: a resposta volta por lá também.
-    if (job.reply_via) await deliverChatReply(this.env, job, text).catch((err) => console.warn(JSON.stringify({ msg: "chat reply failed", error: String(err) })));
+    if (job.reply_via) await this.replyToChat(job, text).catch((err) => console.warn(JSON.stringify({ msg: "chat reply failed", error: String(err) })));
     await publishJob(ctx, job);
     await maybeWarnBudget(ctx, job.agent_id);
     this.needsPump = true;
@@ -734,7 +759,7 @@ export class WorkspaceHub extends DurableObject<AppEnv> {
     const reason = (job.error ?? "erro desconhecido").slice(0, 300);
     if (job.channel_id) await postSystemMessage(ctx, job.channel_id, `${name} parou com um erro: ${reason}`, job.thread_root_id);
     if (job.reply_via) {
-      await deliverChatReply(this.env, job, `${name} não conseguiu terminar este pedido. Abra o Puxibot para ver o que houve.`).catch(() => {});
+      await this.replyToChat(job, `${name} não conseguiu terminar este pedido. Abra o Puxibot para ver o que houve.`).catch(() => {});
     }
     if (agent) {
       await notify(ctx, {

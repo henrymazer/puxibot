@@ -109,6 +109,23 @@ export function ChatChannelsSettings() {
       )}
 
       <Card>
+        <SectionTitle>WhatsApp pelo seu computador (QR code)</SectionTitle>
+        <p className="text-sm text-muted">
+          Para uso pessoal, você pode ligar o seu próprio WhatsApp sem a API oficial: o vínculo é feito por QR code no computador onde o seu runner roda, e as
+          chaves ficam só nele. No terminal desse computador:
+        </p>
+        <pre className="mt-2 overflow-x-auto rounded-md border border-line bg-surface-2 px-3 py-2 font-mono text-xs text-ink">puxibot whatsapp conectar --agente &lt;handle do agente&gt;</pre>
+        <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm text-muted">
+          <li>Depois de ler o QR code, escreva na conversa “Mensagem para você mesmo” do WhatsApp. Só mensagens suas chegam ao agente; grupos e outras conversas são ignorados.</li>
+          <li>Funciona com o computador ligado e o runner rodando. Se estiver desligado, a resposta fica aqui na conversa do Puxibot.</li>
+          <li>
+            Usa um cliente não oficial do WhatsApp: há um risco pequeno de a conta ser restringida. Serve para poucas mensagens entre você e o seu agente. Para atender
+            clientes ou enviar em volume, use a API oficial (o cartão do WhatsApp acima).
+          </li>
+        </ul>
+      </Card>
+
+      <Card>
         <SectionTitle>Como funciona</SectionTitle>
         <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted">
           <li>Só a conta que você ligou consegue falar com o agente. Mensagens de outras pessoas são ignoradas.</li>

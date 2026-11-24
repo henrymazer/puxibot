@@ -70,6 +70,8 @@ export interface WhatsAppOptions {
   onQr?(qr: string, expiresAt: number): void;
   onState?(state: WaState, detail: string): void;
   onDrop?(reason: WaDropReason): void;
+  /** Cada queda de conexão, com o código do WhatsApp e a mensagem da biblioteca (sem dados da conta). */
+  onDisconnect?(code: number | undefined, message: string, attempt: number): void;
   logger: Logger;
   /** Testes: base da espera para reconectar (padrão 1000 ms) e prazo do vínculo (padrão 5 min). */
   reconnectBaseMs?: number;
@@ -358,7 +360,7 @@ export class WhatsAppChannel {
       }
     });
 
-    socket.ev.on("connection.update", (update: { qr?: string; isNewLogin?: boolean; connection?: string; lastDisconnect?: { error?: { output?: { statusCode?: number } } } }) => {
+    socket.ev.on("connection.update", (update: { qr?: string; isNewLogin?: boolean; connection?: string; lastDisconnect?: { error?: { message?: string; output?: { statusCode?: number } } } }) => {
       if (!current()) return;
       if (update.qr) {
         if (!this.o.pairing) return this.halt("stopped", "O WhatsApp pediu um QR code novo. Rode `puxibot whatsapp conectar`.");
@@ -367,7 +369,11 @@ export class WhatsAppChannel {
       }
       if (update.isNewLogin) this.setState("connecting");
       if (update.connection === "open") void this.onOpen();
-      if (update.connection === "close") this.onClose(update.lastDisconnect?.error?.output?.statusCode);
+      if (update.connection === "close") {
+        const error = update.lastDisconnect?.error;
+        this.o.onDisconnect?.(error?.output?.statusCode, String(error?.message ?? "").slice(0, 200), this.attempt + 1);
+        if (current()) this.onClose(error?.output?.statusCode);
+      }
     });
   }
 

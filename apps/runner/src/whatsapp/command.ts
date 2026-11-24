@@ -81,6 +81,8 @@ export async function whatsappConnect(o: ConnectOptions, out: (line: string) => 
   let finish: (v: WaState) => void = () => {};
   const done = new Promise<WaState>((resolve) => (finish = resolve));
   let detail = "";
+  let announced = false;
+  let giveUp = "";
   const channel = new WhatsAppChannel({
     lib,
     store,
@@ -98,8 +100,20 @@ export async function whatsappConnect(o: ConnectOptions, out: (line: string) => 
     },
     onState: (state, d) => {
       detail = d;
-      if (state === "connecting") out("Conectando ao WhatsApp...");
+      if (state === "connecting" && !announced) {
+        announced = true;
+        out("Conectando ao WhatsApp...");
+      }
       if (state === "connected" || state === "failed" || state === "expired" || state === "logged_out") finish(state);
+    },
+    onDisconnect: (code, message, attempt) => {
+      // 515 é o pedido normal de reconexão logo depois de ler o QR.
+      if (code === 515) return;
+      out(`A conexão caiu (código ${code ?? "?"}${message ? `: ${message}` : ""}). Tentando de novo...`);
+      if (attempt >= 6) {
+        giveUp = `O WhatsApp fechou a conexão ${attempt} vezes seguidas (código ${code ?? "?"}${message ? `: ${message}` : ""}). Rode \`puxibot whatsapp desconectar\`, remova o aparelho "Puxibot" em Dispositivos conectados no celular e vincule de novo.`;
+        finish("failed");
+      }
     },
   });
   const cancel = () => {
@@ -117,9 +131,10 @@ export async function whatsappConnect(o: ConnectOptions, out: (line: string) => 
   clearInterval(alive);
   process.removeListener("SIGINT", cancel);
   if (state !== "connected") {
+    const failure = detail;
     await channel.stop();
     if (resuming && state === "logged_out") throw new Error("o vínculo iniciado antes não vale mais. Rode o comando de novo para receber um QR code novo.");
-    throw new Error(detail || "não foi possível vincular o WhatsApp.");
+    throw new Error(giveUp || failure || "não foi possível vincular o WhatsApp.");
   }
   const own = channel.ownNumber();
   // Logo depois do vínculo o WhatsApp ainda entrega chaves; espera um pouco antes de fechar.

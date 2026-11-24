@@ -125,6 +125,8 @@ export class WhatsAppChannel {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private creds: any = null;
   private writes: Promise<void> = Promise.resolve();
+  /** Apagar as chaves leva um instante; quem encerra o canal espera isso terminar. */
+  private cleanup: Promise<void> = Promise.resolve();
   private work: Promise<void> = Promise.resolve();
   private queued = 0;
   private attempt = 0;
@@ -243,8 +245,8 @@ export class WhatsAppChannel {
     if (!this.linked()) {
       // Vínculo novo: o QR vale 1 minuto e a montagem inteira, 5. Depois disso as chaves pela metade somem.
       this.setupTimer = setTimeout(() => {
+        this.cleanup = this.o.store.clear().catch(() => {});
         this.halt("expired", "O tempo para ler o QR code acabou. Comece de novo para receber outro.");
-        void this.o.store.clear().catch(() => {});
       }, this.o.setupTimeoutMs ?? 5 * 60_000);
       this.setupTimer.unref();
     }
@@ -276,6 +278,7 @@ export class WhatsAppChannel {
   async stop(): Promise<void> {
     this.halt("stopped", "");
     await this.writes;
+    await this.cleanup;
   }
 
   /** Desvincula: avisa o WhatsApp (o aparelho some de "Dispositivos conectados") e apaga as chaves daqui. */
@@ -400,8 +403,8 @@ export class WhatsAppChannel {
     const R = this.o.lib.DisconnectReason;
     this.socket = null;
     if (code === R.loggedOut) {
+      this.cleanup = this.writes.then(() => this.o.store.clear()).catch(() => {});
       this.halt("logged_out", "O WhatsApp foi desconectado pelo celular. Rode `puxibot whatsapp conectar` para vincular de novo.");
-      void this.o.store.clear().catch(() => {});
       return;
     }
     if (code === R.connectionReplaced || code === R.badSession || code === R.forbidden || code === R.multideviceMismatch) {

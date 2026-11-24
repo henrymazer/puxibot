@@ -78,63 +78,76 @@ export async function whatsappConnect(o: ConnectOptions, out: (line: string) => 
   const store = fileSlotStore(whatsappPaths.session());
   if (resuming) out("Há um vínculo iniciado e não concluído neste computador. Retomando...");
 
-  let finish: (v: WaState) => void = () => {};
-  const done = new Promise<WaState>((resolve) => (finish = resolve));
-  let detail = "";
-  let announced = false;
-  let giveUp = "";
-  const channel = new WhatsAppChannel({
-    lib,
-    store,
-    mode,
-    allowedNumber: allowed,
-    pairing: true,
-    logger: silentLogger,
-    onText: () => {},
-    onQr: (qr) => {
-      out("");
-      qrcode.generate(qr, { small: true }, (art) => out(art));
-      out("No celular: WhatsApp › Configurações › Dispositivos conectados › Conectar dispositivo, e leia o código acima.");
-      out(mode === "bot" ? "Leia com o celular do número SEPARADO (o do agente), não com o seu." : "Leia com o celular do seu próprio número.");
-      out("O código vale 1 minuto; um novo aparece sozinho. Ctrl+C cancela.");
-    },
-    onState: (state, d) => {
-      detail = d;
-      if (state === "connecting" && !announced) {
-        announced = true;
-        out("Conectando ao WhatsApp...");
-      }
-      if (state === "connected" || state === "failed" || state === "expired" || state === "logged_out") finish(state);
-    },
-    onDisconnect: (code, message, attempt) => {
-      // 515 é o pedido normal de reconexão logo depois de ler o QR.
-      if (code === 515) return;
-      out(`A conexão caiu (código ${code ?? "?"}${message ? `: ${message}` : ""}). Tentando de novo...`);
-      if (attempt >= 6) {
-        giveUp = `O WhatsApp fechou a conexão ${attempt} vezes seguidas (código ${code ?? "?"}${message ? `: ${message}` : ""}). Rode \`puxibot whatsapp desconectar\`, remova o aparelho "Puxibot" em Dispositivos conectados no celular e vincule de novo.`;
-        finish("failed");
-      }
-    },
-  });
-  const cancel = () => {
-    // Vínculo pela metade não fica guardado.
-    void channel
-      .stop()
-      .then(() => (channel.linked() ? undefined : store.clear()))
-      .finally(() => process.exit(130));
+  const attempt = async () => {
+    let finish: (v: WaState) => void = () => {};
+    const done = new Promise<WaState>((resolve) => (finish = resolve));
+    let detail = "";
+    let announced = false;
+    let giveUp = "";
+    const channel = new WhatsAppChannel({
+      lib,
+      store,
+      mode,
+      allowedNumber: allowed,
+      pairing: true,
+      logger: silentLogger,
+      onText: () => {},
+      onQr: (qr) => {
+        out("");
+        qrcode.generate(qr, { small: true }, (art) => out(art));
+        out("No celular: WhatsApp › Configurações › Dispositivos conectados › Conectar dispositivo, e leia o código acima.");
+        out(mode === "bot" ? "Leia com o celular do número SEPARADO (o do agente), não com o seu." : "Leia com o celular do seu próprio número.");
+        out("O código vale 1 minuto; um novo aparece sozinho. Ctrl+C cancela.");
+      },
+      onState: (state, d) => {
+        detail = d;
+        if (state === "connecting" && !announced) {
+          announced = true;
+          out("Conectando ao WhatsApp...");
+        }
+        if (state === "connected" || state === "failed" || state === "expired" || state === "logged_out") finish(state);
+      },
+      onDisconnect: (code, message, attempt) => {
+        // 515 é o pedido normal de reconexão logo depois de ler o QR.
+        if (code === 515) return;
+        out(`A conexão caiu (código ${code ?? "?"}${message ? `: ${message}` : ""}). Tentando de novo...`);
+        if (attempt >= 6) {
+          giveUp = `O WhatsApp fechou a conexão ${attempt} vezes seguidas (código ${code ?? "?"}${message ? `: ${message}` : ""}). Rode \`puxibot whatsapp desconectar\`, remova o aparelho "Puxibot" em Dispositivos conectados no celular e vincule de novo.`;
+          finish("failed");
+        }
+      },
+    });
+    const cancel = () => {
+      // Vínculo pela metade não fica guardado.
+      void channel
+        .stop()
+        .then(() => (channel.linked() ? undefined : store.clear()))
+        .finally(() => process.exit(130));
+    };
+    process.once("SIGINT", cancel);
+    // Mantém o processo vivo enquanto o vínculo não termina, mesmo nos instantes sem conexão aberta.
+    const alive = setInterval(() => {}, 1000);
+    await channel.start();
+    const state = await done;
+    clearInterval(alive);
+    process.removeListener("SIGINT", cancel);
+    return { state, channel, detail, giveUp };
   };
-  process.once("SIGINT", cancel);
-  // Mantém o processo vivo enquanto o vínculo não termina, mesmo nos instantes sem conexão aberta.
-  const alive = setInterval(() => {}, 1000);
-  await channel.start();
-  const state = await done;
-  clearInterval(alive);
-  process.removeListener("SIGINT", cancel);
+
+  let result = await attempt();
+  if (resuming && result.state === "logged_out") {
+    // O WhatsApp recusou o vínculo que ficou pela metade: apaga o que sobrou e começa um novo, com QR.
+    await result.channel.stop();
+    await store.clear();
+    out("O vínculo iniciado antes não vale mais. Gerando um QR code novo...");
+    out('Se aparecer um aparelho "Puxibot" antigo em Dispositivos conectados no celular, remova-o.');
+    result = await attempt();
+  }
+  const { state, channel } = result;
   if (state !== "connected") {
-    const failure = detail;
     await channel.stop();
-    if (resuming && state === "logged_out") throw new Error("o vínculo iniciado antes não vale mais. Rode o comando de novo para receber um QR code novo.");
-    throw new Error(giveUp || failure || "não foi possível vincular o WhatsApp.");
+    if (state === "logged_out" || state === "expired") await store.clear();
+    throw new Error(result.giveUp || result.detail || "não foi possível vincular o WhatsApp.");
   }
   const own = channel.ownNumber();
   // Logo depois do vínculo o WhatsApp ainda entrega chaves; espera um pouco antes de fechar.
